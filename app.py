@@ -4,270 +4,272 @@ import google.generativeai as genai
 import PIL.Image
 import io
 import json
-import time
 
-# --- 1. Configuração da Página (Deve ser a primeira linha) ---
+# --- 1. Configuração da Página (Clean & Wide) ---
 st.set_page_config(
-    page_title="Brametal | Controle de Devolução",
+    page_title="Sistema de Devolução",
     page_icon="🏗️",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="collapsed" # Barra lateral escondida para focar no conteúdo
 )
 
-# --- 2. CSS Personalizado (O "Banho de Loja") ---
+# --- 2. CSS Minimalista (Estilo Profissional) ---
 st.markdown("""
 <style>
-    /* Fundo geral e fontes */
-    .stApp {
-        background-color: #f0f2f6;
+    /* Remover padding excessivo do topo */
+    .block-container {
+        padding-top: 2rem;
+        padding-bottom: 2rem;
     }
     
-    /* Cabeçalho */
+    /* Títulos */
     h1 {
-        color: #0d47a1;
-        font-family: 'Helvetica', sans-serif;
-        font-weight: 700;
-        padding-top: 0px;
-    }
-    h3 {
-        color: #1565c0;
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        color: #1a1a1a;
+        font-weight: 600;
+        font-size: 2.2rem;
     }
     
-    /* Cards de Upload */
+    /* Uploaders mais bonitos */
     .stFileUploader {
-        background-color: white;
-        padding: 20px;
-        border-radius: 10px;
-        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        border: 1px dashed #d1d5db;
+        border-radius: 8px;
+        padding: 1rem;
+        transition: border 0.3s;
+    }
+    .stFileUploader:hover {
+        border-color: #2563eb;
     }
     
-    /* Botão Principal */
+    /* Botão Principal - Azul Corporativo */
     .stButton>button {
-        width: 100%;
-        background-color: #0d47a1; /* Azul Escuro */
+        background-color: #2563eb;
         color: white;
-        font-size: 18px;
-        font-weight: bold;
-        border-radius: 8px;
-        padding: 0.8rem;
+        border-radius: 6px;
+        font-weight: 500;
+        height: 3rem;
+        width: 100%;
         border: none;
-        transition: all 0.3s;
     }
     .stButton>button:hover {
-        background-color: #1565c0; /* Azul mais claro no mouse over */
-        box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+        background-color: #1d4ed8;
         color: white;
     }
-
-    /* Métricas */
+    
+    /* Métricas Limpas */
     div[data-testid="stMetric"] {
-        background-color: white;
-        padding: 15px;
+        background-color: #f8fafc;
+        border: 1px solid #e2e8f0;
         border-radius: 8px;
-        border-left: 5px solid #0d47a1;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        padding: 10px;
     }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 3. Lógica de Autenticação (Chave API) ---
+# --- 3. Lógica da API Key ---
 if "GEMINI_API_KEY" in st.secrets:
     api_key = st.secrets["GEMINI_API_KEY"]
-    auth_status = True
 else:
-    auth_status = False
+    # Se não tiver configurado no servidor, pede na sidebar
+    with st.sidebar:
+        api_key = st.text_input("Chave de API", type="password")
 
-# --- 4. Barra Lateral (Sidebar) ---
-with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/2504/2504936.png", width=80) # Ícone genérico de indústria
-    st.title("Menu de Controle")
-    
-    st.markdown("---")
-    
-    if auth_status:
-        st.success("✅ Sistema Licenciado")
-    else:
-        st.warning("⚠️ Modo Desenvolvedor")
-        api_key = st.text_input("Insira API Key", type="password")
+# --- 4. Interface Principal ---
 
-    st.markdown("### 📝 Como usar:")
-    st.markdown("""
-    1. **Base de Dados:** Suba a planilha do SAP com os pesos teóricos.
-    2. **Fotos:** Selecione todas as fotos das etiquetas de uma vez.
-    3. **Processar:** Clique no botão azul e aguarde a mágica.
-    """)
-    
-    st.markdown("---")
-    st.caption("Versão 2.0 - Brametal System")
+# Cabeçalho Limpo
+c1, c2 = st.columns([3, 1])
+with c1:
+    st.title("Sistema de Devolução")
+    st.markdown("Extração automática de etiquetas e conferência com SAP.")
 
-# --- 5. Corpo Principal ---
+if not api_key:
+    st.warning("⚠️ Configure a Chave de API no menu lateral ou nos Secrets para começar.")
+    st.stop()
 
-# Cabeçalho com colunas para organizar
-col_header_1, col_header_2 = st.columns([3, 1])
-with col_header_1:
-    st.title("Controle de Devolução & Sucata")
-    st.markdown("Sistema inteligente para leitura de etiquetas e recálculo de peso teórico.")
+st.markdown("---")
 
-st.markdown("<br>", unsafe_allow_html=True) # Espaço
+# Área de Upload (Lado a Lado)
+col_sap, col_img = st.columns(2)
 
-# Área de Uploads
-col1, col2 = st.columns(2)
+with col_sap:
+    st.markdown("### 1. Planilha SAP")
+    file_sap = st.file_uploader("Carregar Excel (.xlsx / .csv)", type=['xlsx', 'xls', 'csv'])
 
-with col1:
-    st.markdown("### 📂 1. Base de Dados (SAP)")
-    file_sap = st.file_uploader(
-        "Arraste a planilha aqui", 
-        type=['xlsx', 'xls', 'csv'],
-        key="sap_uploader"
-    )
+with col_img:
+    st.markdown("### 2. Fotos das Etiquetas")
+    uploaded_images = st.file_uploader("Carregar Fotos", type=['png', 'jpg', 'jpeg'], accept_multiple_files=True)
 
-with col2:
-    st.markdown("### 📷 2. Fotos das Etiquetas")
-    uploaded_images = st.file_uploader(
-        "Selecione as fotos (múltiplos arquivos)", 
-        type=['png', 'jpg', 'jpeg'], 
-        accept_multiple_files=True,
-        key="img_uploader"
-    )
+# --- 5. Funções de Processamento ---
 
-# --- 6. Funções de Negócio ---
-
-def carregar_dados_sap(file):
+def carregar_sap(file):
     try:
-        if file.name.endswith('.csv'):
-            df = pd.read_csv(file)
-        else:
-            df = pd.read_excel(file)
+        if file.name.endswith('.csv'): df = pd.read_csv(file)
+        else: df = pd.read_excel(file)
         df.columns = df.columns.str.strip()
+        # Garante tipos corretos
         df['Produto'] = pd.to_numeric(df['Produto'], errors='coerce').fillna(0).astype(int)
         return df[['Produto', 'Peso por Metro']]
-    except Exception as e:
+    except:
         return None
 
-def calcular_nova_dimensao(tamanho_mm):
+def regra_arredondamento(mm):
     try:
-        val = int(float(tamanho_mm))
+        val = int(float(mm))
+        # Regra: Múltiplos de 500mm para baixo
         return (val // 500) * 500
     except:
         return 0
 
-# --- 7. Botão de Ação ---
-st.markdown("---")
-col_btn_1, col_btn_2, col_btn_3 = st.columns([1, 2, 1])
+# --- 6. Botão de Ação ---
+st.markdown("###")
+btn_processar = st.button("INICIAR CONFERÊNCIA")
 
-with col_btn_2:
-    process_btn = st.button("🚀 INICIAR PROCESSAMENTO AUTOMÁTICO")
-
-# --- 8. Execução ---
-
-if process_btn:
-    if not api_key:
-        st.error("❌ Chave de API ausente.")
-        st.stop()
+if btn_processar:
     if not file_sap or not uploaded_images:
-        st.warning("⚠️ Por favor, carregue a Planilha SAP e as Fotos antes de iniciar.")
+        st.error("Por favor, carregue ambos os arquivos acima.")
         st.stop()
 
     # Layout de Carregamento
-    with st.status("🤖 A IA está trabalhando...", expanded=True) as status:
-        
-        st.write("📥 Lendo planilha SAP...")
-        df_sap = carregar_dados_sap(file_sap)
-        if df_sap is None:
-            status.update(label="Erro na planilha SAP", state="error")
-            st.stop()
-        
-        st.write("👁️ Analisando etiquetas (Vision AI)...")
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        
-        dados_extraidos = []
-        progress_bar = st.progress(0)
+    status_container = st.container()
+    
+    with status_container:
+        with st.status("Processando...", expanded=True) as status:
+            
+            # 1. Carregar SAP
+            st.write("📂 Lendo base de dados...")
+            df_sap = carregar_sap(file_sap)
+            if df_sap is None:
+                st.error("Erro na planilha SAP. Verifique se tem as colunas 'Produto' e 'Peso por Metro'.")
+                st.stop()
 
-        for index, img_file in enumerate(uploaded_images):
-            try:
-                image = PIL.Image.open(img_file)
-                prompt = """
-                Extraia JSON estrito:
-                [{'Reserva': 'txt', 'Descrição Material': 'txt', 'Código Material': int, 'Quantidade': int, 'Peso': float, 'Tamanho': int}]
-                Se 'Código Material' não estiver claro, tente inferir ou deixe 0.
-                """
-                response = model.generate_content([prompt, image])
-                text_json = response.text.replace("```json", "").replace("```", "").strip()
+            # 2. Configurar IA
+            genai.configure(api_key=api_key)
+            model = genai.GenerativeModel('gemini-1.5-flash')
+            
+            dados_brutos = []
+            progresso = st.progress(0)
+            
+            # 3. Loop Imagens
+            for i, img_file in enumerate(uploaded_images):
+                try:
+                    img = PIL.Image.open(img_file)
+                    
+                    # PROMPT MELHORADO PARA SUJEIRA E MANUSCRITO
+                    prompt = """
+                    Atue como um especialista em OCR industrial. Analise esta imagem de etiqueta de aço (Brametal).
+                    A etiqueta pode estar suja, rasgada ou com anotações manuais.
+                    
+                    Sua missão é extrair um JSON com estes campos exatos:
+                    - "Reserva": O número escrito à MÃO (caneta/marcador). Geralmente fora da etiqueta ou rabiscado nela. Se não achar, deixe vazio.
+                    - "Descrição Material": Texto descritivo (Ex: L 90 X 6...).
+                    - "Código Material": Código numérico longo (Ex: 110000...).
+                    - "Quantidade": Inteiro.
+                    - "Peso": Decimal (ponto).
+                    - "Tamanho": Inteiro em mm.
+                    
+                    Se a imagem estiver muito ruim, faça o seu melhor palpite baseado no contexto visual.
+                    Retorne APENAS o JSON. Sem markdown.
+                    """
+                    
+                    res = model.generate_content([prompt, img])
+                    text = res.text.replace("```json", "").replace("```", "").strip()
+                    
+                    # Limpeza extra para garantir JSON válido
+                    if "{" in text:
+                        start = text.find("{")
+                        end = text.rfind("}") + 1
+                        json_str = text[start:end]
+                        data = json.loads(json_str)
+                        dados_brutos.append(data)
+                        
+                except Exception as e:
+                    # Falha silenciosa para não travar tudo, mas registra erro no log se precisar
+                    print(f"Erro na imagem {img_file.name}: {e}")
                 
-                # Tratamento robusto de JSON
-                if text_json.startswith("{"): text_json = "[" + text_json + "]"
-                items = json.loads(text_json)
+                progresso.progress((i + 1) / len(uploaded_images))
+            
+            st.write("⚙️ Cruzando dados e calculando...")
+            
+            if dados_brutos:
+                df = pd.DataFrame(dados_brutos)
                 
-                for item in items:
-                    dados_extraidos.append(item)
-            except:
-                pass # Ignora erros pontuais para não parar o processo
-            
-            progress_bar.progress((index + 1) / len(uploaded_images))
-        
-        st.write("📐 Realizando cálculos de engenharia...")
-        
-        if dados_extraidos:
-            df_etiquetas = pd.DataFrame(dados_extraidos)
-            
-            # Tratamento de dados
-            df_etiquetas['Código Material'] = pd.to_numeric(df_etiquetas['Código Material'], errors='coerce').fillna(0).astype(int)
-            df_etiquetas['Quantidade'] = pd.to_numeric(df_etiquetas['Quantidade'], errors='coerce').fillna(1).astype(int)
-            df_etiquetas['Peso'] = pd.to_numeric(df_etiquetas['Peso'], errors='coerce').fillna(0.0)
-            df_etiquetas['Tamanho'] = pd.to_numeric(df_etiquetas['Tamanho'], errors='coerce').fillna(0).astype(int)
+                # Tratamento de Nulos/Erros de Tipo
+                cols_num = ['Código Material', 'Quantidade', 'Peso', 'Tamanho']
+                for c in cols_num:
+                    if c in df.columns:
+                        df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
+                
+                # Conversão para Inteiros onde necessário
+                if 'Código Material' in df.columns: df['Código Material'] = df['Código Material'].astype(int)
+                if 'Quantidade' in df.columns: df['Quantidade'] = df['Quantidade'].astype(int)
+                if 'Tamanho' in df.columns: df['Tamanho'] = df['Tamanho'].astype(int)
 
-            # Cruzamento
-            df_final = df_etiquetas.merge(df_sap, left_on='Código Material', right_on='Produto', how='left')
-            df_final.rename(columns={'Peso por Metro': 'Peso Padrão (SAP)'}, inplace=True)
-            df_final['Peso Padrão (SAP)'] = df_final['Peso Padrão (SAP)'].fillna(0.0)
+                # Cruzamento com SAP
+                df_final = df.merge(df_sap, left_on='Código Material', right_on='Produto', how='left')
+                df_final.rename(columns={'Peso por Metro': 'Peso SAP (kg/m)'}, inplace=True)
+                df_final['Peso SAP (kg/m)'] = df_final['Peso SAP (kg/m)'].fillna(0.0)
 
-            # Cálculos
-            df_final['Nova Dimensão (mm)'] = df_final['Tamanho'].apply(calcular_nova_dimensao)
-            df_final['Peso Real Nova Dimensão'] = (df_final['Nova Dimensão (mm)']/1000) * df_final['Peso Padrão (SAP)'] * df_final['Quantidade']
-            df_final['Diferença'] = df_final['Peso'] - df_final['Peso Real Nova Dimensão']
+                # Cálculos Finais
+                df_final['Nova Dimensão (mm)'] = df_final['Tamanho'].apply(regra_arredondamento)
+                
+                # Fórmula: (Nova Dimensão mm / 1000) * Peso SAP * Qtd
+                df_final['Peso Calculado'] = (df_final['Nova Dimensão (mm)'] / 1000.0) * df_final['Peso SAP (kg/m)'] * df_final['Quantidade']
+                
+                if 'Peso' in df_final.columns:
+                    df_final['Diferença (Sucata)'] = df_final['Peso'] - df_final['Peso Calculado']
+                else:
+                    df_final['Diferença (Sucata)'] = 0.0
 
-            # Colunas Finais
-            cols = ['Reserva', 'Descrição Material', 'Código Material', 'Quantidade', 'Peso', 'Tamanho', 'Nova Dimensão (mm)', 'Peso Real Nova Dimensão', 'Diferença']
-            for c in cols:
-                if c not in df_final.columns: df_final[c] = 0
-            df_final = df_final[cols]
+                # Organizar Colunas
+                cols_order = [
+                    'Reserva', 'Descrição Material', 'Código Material', 'Quantidade', 
+                    'Peso', 'Tamanho', 'Peso SAP (kg/m)', 
+                    'Nova Dimensão (mm)', 'Peso Calculado', 'Diferença (Sucata)'
+                ]
+                
+                # Garante que todas colunas existem
+                for c in cols_order:
+                    if c not in df_final.columns: df_final[c] = 0
+                
+                df_final = df_final[cols_order]
 
-            status.update(label="Processamento Concluído!", state="complete", expanded=False)
-            
-            # --- 9. Exibição dos Resultados (Bonito) ---
-            st.markdown("### 📊 Resultado da Análise")
-            
-            # Cards de Métricas
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Total de Peças", f"{df_final['Quantidade'].sum()} un")
-            m2.metric("Peso Processado", f"{df_final['Peso'].sum():.2f} kg")
-            total_sucata = df_final['Diferença'].sum()
-            m3.metric("Diferença Total (Sucata)", f"{total_sucata:.2f} kg", delta_color="inverse")
+                status.update(label="Concluído!", state="complete", expanded=False)
+                
+                # --- RESULTADOS ---
+                st.markdown("### Resultados")
+                
+                # Cards de Resumo
+                m1, m2, m3 = st.columns(3)
+                m1.metric("Itens Lidos", len(df_final))
+                m2.metric("Peso Total (Etiqueta)", f"{df_final['Peso'].sum():.2f} kg")
+                
+                delta_val = df_final['Diferença (Sucata)'].sum()
+                m3.metric("Total Sucata", f"{delta_val:.2f} kg", delta_color="off")
 
-            # Tabela Estilizada (Highlight)
-            def highlight_diff(val):
-                color = '#ffcdd2' if val > 0.5 else '#c8e6c9' # Vermelho claro se > 0.5kg, Verde se ok
-                return f'background-color: {color}'
+                # Tabela Interativa (Data Editor é mais bonito que Dataframe)
+                st.data_editor(
+                    df_final,
+                    column_config={
+                        "Peso": st.column_config.NumberColumn(format="%.2f kg"),
+                        "Peso Calculado": st.column_config.NumberColumn(format="%.2f kg"),
+                        "Diferença (Sucata)": st.column_config.NumberColumn(format="%.2f kg"),
+                        "Peso SAP (kg/m)": st.column_config.NumberColumn(format="%.2f"),
+                    },
+                    use_container_width=True,
+                    hide_index=True
+                )
 
-            st.dataframe(
-                df_final.style.format({"Peso": "{:.2f}", "Peso Real Nova Dimensão": "{:.2f}", "Diferença": "{:.2f}"})
-                .applymap(highlight_diff, subset=['Diferença']),
-                use_container_width=True
-            )
+                # Download
+                buffer = io.BytesIO()
+                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                    df_final.to_excel(writer, index=False)
+                
+                st.download_button(
+                    label="📥 Baixar Excel Final",
+                    data=buffer.getvalue(),
+                    file_name="Relatorio_Devolucao.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
 
-            # Download
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                df_final.to_excel(writer, index=False)
-            
-            st.download_button(
-                label="📥 BAIXAR RELATÓRIO EXCEL COMPLETO",
-                data=buffer.getvalue(),
-                file_name="Relatorio_Brametal_Final.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="download-btn"
-            )
-
-        else:
-            st.error("Nenhum dado legível encontrado nas imagens.")
+            else:
+                st.error("Não foi possível extrair dados. Tente fotos mais próximas ou verifique a API Key.")
