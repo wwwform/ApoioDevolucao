@@ -1,244 +1,174 @@
 import streamlit as st
 import pandas as pd
-import google.generativeai as genai
-import PIL.Image
 import io
-import json
 
-# --- Configuração da Página ---
+# --- 1. Configuração (Layout Profissional) ---
 st.set_page_config(
-    page_title="Relatório de Devolução",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    page_title="Sistema de Devolução Manual",
+    page_icon="✍️",
+    layout="wide"
 )
 
-# --- Barra Lateral de Controle ---
+# --- 2. CSS para Tabela de Entrada ---
+st.markdown("""
+<style>
+    .stApp {background-color: #f8fafc;}
+    h1 {color: #1e293b; font-family: 'Segoe UI', sans-serif;}
+    .stButton>button {
+        background-color: #166534; /* Verde Sóbrio */
+        color: white; 
+        height: 3rem; 
+        font-weight: 600;
+        border-radius: 6px;
+    }
+    .stButton>button:hover {background-color: #14532d; color: white;}
+</style>
+""", unsafe_allow_html=True)
+
+# --- 3. Barra Lateral (Apenas SAP) ---
 with st.sidebar:
-    st.header("Parâmetros de Entrada")
+    st.header("1. Base de Dados")
+    st.info("Carregue a planilha do SAP para que o sistema possa calcular o Peso Teórico automaticamente.")
     
-    # 1. Autenticação
-    if "GEMINI_API_KEY" in st.secrets:
-        api_key = st.secrets["GEMINI_API_KEY"]
-    else:
-        api_key = st.text_input("Chave de API", type="password")
-
-    st.markdown("---")
-    
-    # 2. Uploads
-    st.subheader("Arquivos")
-    file_sap = st.file_uploader("1. Base SAP (.xlsx/.csv)", type=['xlsx', 'xls', 'csv'])
-    uploaded_images = st.file_uploader("2. Fotos das Etiquetas", type=['png', 'jpg', 'jpeg'], accept_multiple_files=True)
+    file_sap = st.file_uploader("Upload Tabela SAP (.xlsx/.csv)", type=['xlsx', 'xls', 'csv'])
     
     st.markdown("---")
-    
-    # 3. Botão de Execução
-    btn_processar = st.button("Gerar Relatório", type="primary", use_container_width=True)
+    st.caption("Modo de Entrada Manual")
 
-# --- Funções do Sistema ---
-
-def limpar_json(texto):
-    """Limpa a resposta da IA para garantir um JSON válido."""
-    texto = texto.replace("```json", "").replace("```", "").strip()
-    # Tenta encontrar o início e fim da lista ou objeto
-    if "{" in texto:
-        inicio = texto.find("{")
-        fim = texto.rfind("}") + 1
-        return texto[inicio:fim]
-    return texto
-
-def carregar_base_sap(arquivo):
+# --- 4. Funções ---
+def carregar_sap(file):
     try:
-        if arquivo.name.endswith('.csv'):
-            df = pd.read_csv(arquivo)
-        else:
-            df = pd.read_excel(arquivo)
-        
-        # Padronização de colunas
+        if file.name.endswith('.csv'): df = pd.read_csv(file)
+        else: df = pd.read_excel(file)
         df.columns = df.columns.str.strip()
-        
-        # Validação mínima
-        colunas_esperadas = ['Produto', 'Peso por Metro']
-        if not all(col in df.columns for col in colunas_esperadas):
-            return None, f"Colunas obrigatórias ausentes. Necessário: {colunas_esperadas}"
-            
+        # Garante que o Produto é número para cruzar
         df['Produto'] = pd.to_numeric(df['Produto'], errors='coerce').fillna(0).astype(int)
-        return df[['Produto', 'Peso por Metro']], None
+        return df[['Produto', 'Peso por Metro']]
     except Exception as e:
-        return None, str(e)
+        st.error(f"Erro no arquivo SAP: {e}")
+        return None
 
-def calcular_dimensao_corte(valor_mm):
-    """Aplica regra de corte: múltiplos de 500mm arredondados para baixo."""
+def regra_corte(mm):
+    """Arredonda para baixo (múltiplo de 500)"""
     try:
-        valor = int(float(valor_mm))
-        return (valor // 500) * 500
-    except:
-        return 0
+        val = int(float(mm))
+        return (val // 500) * 500
+    except: return 0
 
-# --- Processamento Principal ---
+# --- 5. Interface Principal ---
+st.title("✍️ Sistema de Controle de Sucata")
+st.markdown("Digite os dados das etiquetas abaixo. O sistema fará os cálculos de corte e peso teórico automaticamente.")
 
-st.title("Sistema de Controle de Devolução")
-
-if btn_processar:
-    if not api_key:
-        st.error("Erro: Chave de API não configurada.")
-        st.stop()
-        
-    if not file_sap or not uploaded_images:
-        st.warning("Atenção: É necessário carregar a Base SAP e as Fotos para prosseguir.")
-        st.stop()
-
-    # Container de Status
-    status_msg = st.empty()
-    bar_progresso = st.progress(0)
-
-    # 1. Carregamento SAP
-    status_msg.text("Carregando base de dados SAP...")
-    df_sap, erro_sap = carregar_base_sap(file_sap)
-    
-    if erro_sap:
-        st.error(f"Erro na leitura do SAP: {erro_sap}")
-        st.stop()
-
-    # 2. Configuração AI
-    genai.configure(api_key=api_key)
-    # Modelo PRO é obrigatório para ler manuscritos difíceis
-    model = genai.GenerativeModel('gemini-1.5-pro')
-    
-    dados_processados = []
-    
-    # 3. Loop de Processamento de Imagens
-    total_imgs = len(uploaded_images)
-    
-    for i, img_file in enumerate(uploaded_images):
-        status_msg.text(f"Processando item {i+1} de {total_imgs}: {img_file.name}")
-        
-        try:
-            image = PIL.Image.open(img_file)
-            
-            # Prompt Técnico Específico para Etiquetas Brametal
-            prompt = """
-            Extraia os dados técnicos desta etiqueta industrial de aço.
-            Saída obrigatória: Objeto JSON único.
-            
-            Campos a extrair:
-            1. "Reserva": Número manuscrito (feito a caneta/marcador) sobre a peça ou etiqueta. Geralmente tem 7 dígitos (ex: 3800994, 3603907). Se ilegível, retorne "".
-            2. "descricao": Texto exato abaixo de "Desc. Material" (ex: L 90 X 6 A572-GR60).
-            3. "codigo": Número abaixo de "Cod. Material" (ex: 1100001788). Apenas números.
-            4. "qtd": Número em "Quantidade".
-            5. "peso": Número em "Peso". Use ponto para decimal.
-            6. "tamanho": Número em "Dimensões" (mm). Apenas números inteiros.
-
-            Se houver múltiplas etiquetas, foque na mais legível ou central.
-            """
-            
-            response = model.generate_content([prompt, image])
-            texto_json = limpar_json(response.text)
-            
-            dados_item = json.loads(texto_json)
-            
-            # Normalização de chaves para lista
-            if isinstance(dados_item, dict):
-                dados_processados.append(dados_item)
-            elif isinstance(dados_item, list):
-                dados_processados.extend(dados_item)
-                
-        except Exception as e:
-            # Log de erro silencioso para não interromper o lote
-            print(f"Falha na imagem {img_file.name}: {e}")
-            
-        # Atualiza barra
-        bar_progresso.progress((i + 1) / total_imgs)
-
-    status_msg.empty()
-    bar_progresso.empty()
-
-    # 4. Consolidação e Cálculos
-    if dados_processados:
-        df_resultado = pd.DataFrame(dados_processados)
-        
-        # Tratamento de Tipos
-        cols_num = ['codigo', 'qtd', 'peso', 'tamanho']
-        for c in cols_num:
-            if c in df_resultado.columns:
-                df_resultado[c] = pd.to_numeric(df_resultado[c], errors='coerce').fillna(0)
-        
-        if 'codigo' in df_resultado.columns:
-            df_resultado['codigo'] = df_resultado['codigo'].astype(int)
-        
-        # Cruzamento (Merge) com SAP
-        df_final = df_resultado.merge(
-            df_sap, 
-            left_on='codigo', 
-            right_on='Produto', 
-            how='left'
-        )
-        
-        # Renomear colunas para padrão de saída
-        df_final.rename(columns={
-            'Reserva': 'Reserva (Caneta)',
-            'descricao': 'Descrição Material',
-            'codigo': 'Código Material',
-            'qtd': 'Quantidade',
-            'peso': 'Peso Etiqueta',
-            'tamanho': 'Tamanho (mm)',
-            'Peso por Metro': 'Peso Padrão (SAP)'
-        }, inplace=True)
-        
-        # Preencher nulos do SAP com 0
-        df_final['Peso Padrão (SAP)'] = df_final['Peso Padrão (SAP)'].fillna(0.0)
-        
-        # Cálculos de Engenharia
-        df_final['Nova Dimensão (mm)'] = df_final['Tamanho (mm)'].apply(calcular_dimensao_corte)
-        
-        df_final['Peso Recalculado'] = (
-            (df_final['Nova Dimensão (mm)'] / 1000.0) * df_final['Peso Padrão (SAP)'] * df_final['Quantidade']
-        )
-        
-        df_final['Diferença (Sucata)'] = df_final['Peso Etiqueta'] - df_final['Peso Recalculado']
-        
-        # Seleção e Ordenação de Colunas
-        colunas_finais = [
-            'Reserva (Caneta)', 'Descrição Material', 'Código Material', 'Quantidade',
-            'Peso Etiqueta', 'Tamanho (mm)', 'Nova Dimensão (mm)', 
-            'Peso Padrão (SAP)', 'Peso Recalculado', 'Diferença (Sucata)'
-        ]
-        
-        # Garante integridade das colunas
-        for col in colunas_finais:
-            if col not in df_final.columns:
-                df_final[col] = 0
-                
-        df_apresentacao = df_final[colunas_finais]
-
-        # --- Exibição de Resultados ---
-        
-        # Métricas Consolidadas
-        col_m1, col_m2, col_m3 = st.columns(3)
-        col_m1.metric("Itens Processados", len(df_apresentacao))
-        col_m2.metric("Peso Total (Etiqueta)", f"{df_apresentacao['Peso Etiqueta'].sum():.2f} kg")
-        col_m3.metric("Total Sucata", f"{df_apresentacao['Diferença (Sucata)'].sum():.2f} kg")
-        
-        st.markdown("### Detalhamento")
-        st.dataframe(
-            df_apresentacao, 
-            use_container_width=True,
-            hide_index=True
-        )
-        
-        # Exportação Excel
-        buffer = io.BytesIO()
-        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-            df_apresentacao.to_excel(writer, index=False)
-            
-        st.download_button(
-            label="Baixar Relatório Excel (.xlsx)",
-            data=buffer.getvalue(),
-            file_name="Relatorio_Devolucao.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
-        
-    else:
-        st.error("Não foi possível extrair dados válidos das imagens fornecidas. Verifique a qualidade das fotos.")
-
+if not file_sap:
+    st.warning("⚠️ Por favor, carregue a planilha SAP na barra lateral para habilitar os cálculos.")
 else:
-    st.info("Aguardando início do processamento...")
+    df_sap = carregar_sap(file_sap)
+    
+    if df_sap is not None:
+        st.markdown("### 2. Entrada de Dados")
+        
+        # Cria um DataFrame vazio com as colunas certas para o usuário preencher
+        template_data = pd.DataFrame(
+            [{"Reserva": "", "Descrição": "", "Código Material": 0, "Qtd": 1, "Peso Etiqueta": 0.0, "Tamanho (mm)": 0}],
+        )
+
+        # Tabela Editável (Excel na tela)
+        # num_rows="dynamic" permite adicionar linhas clicando no "+"
+        df_input = st.data_editor(
+            template_data,
+            num_rows="dynamic",
+            use_container_width=True,
+            column_config={
+                "Reserva": st.column_config.TextColumn("Reserva (Caneta)", help="Número escrito à mão"),
+                "Descrição": st.column_config.TextColumn("Descrição Material", width="medium"),
+                "Código Material": st.column_config.NumberColumn("Cód. Material (SAP)", format="%d"),
+                "Qtd": st.column_config.NumberColumn("Quantidade", min_value=1, step=1),
+                "Peso Etiqueta": st.column_config.NumberColumn("Peso (kg)", min_value=0.0, format="%.3f"),
+                "Tamanho (mm)": st.column_config.NumberColumn("Tamanho (mm)", min_value=0, step=1),
+            },
+            key="editor"
+        )
+
+        # Botão de Calcular
+        st.markdown("###")
+        if st.button("🔄 CALCULAR SUCATA E GERAR RELATÓRIO"):
+            
+            if df_input.empty or (df_input['Código Material'].sum() == 0):
+                st.error("Preencha a tabela acima com pelo menos um item.")
+            else:
+                # --- Lógica de Negócio ---
+                
+                # 1. Tratamento de Tipos
+                df_calc = df_input.copy()
+                df_calc['Código Material'] = pd.to_numeric(df_calc['Código Material'], errors='coerce').fillna(0).astype(int)
+                df_calc['Qtd'] = pd.to_numeric(df_calc['Qtd'], errors='coerce').fillna(1)
+                df_calc['Peso Etiqueta'] = pd.to_numeric(df_calc['Peso Etiqueta'], errors='coerce').fillna(0.0)
+                df_calc['Tamanho (mm)'] = pd.to_numeric(df_calc['Tamanho (mm)'], errors='coerce').fillna(0)
+
+                # 2. Cruzamento com SAP (VLOOKUP)
+                df_final = df_calc.merge(
+                    df_sap, 
+                    left_on='Código Material', 
+                    right_on='Produto', 
+                    how='left'
+                )
+                
+                # Renomeia coluna SAP
+                df_final.rename(columns={'Peso por Metro': 'Peso Padrão (kg/m)'}, inplace=True)
+                
+                # Se não achou no SAP, avisa visualmente (Peso Padrão = 0)
+                df_final['Peso Padrão (kg/m)'] = df_final['Peso Padrão (kg/m)'].fillna(0.0)
+
+                # 3. Cálculos de Engenharia
+                df_final['Nova Dimensão (mm)'] = df_final['Tamanho (mm)'].apply(regra_corte)
+                
+                # Fórmula: (Nova Dimensão / 1000) * Peso SAP * Qtd
+                df_final['Peso Calculado'] = (
+                    (df_final['Nova Dimensão (mm)'] / 1000.0) * df_final['Peso Padrão (kg/m)'] * df_final['Qtd']
+                )
+                
+                df_final['Diferença (Sucata)'] = df_final['Peso Etiqueta'] - df_final['Peso Calculado']
+
+                # 4. Organização Final
+                cols_order = [
+                    'Reserva', 'Descrição', 'Código Material', 'Qtd', 
+                    'Peso Etiqueta', 'Tamanho (mm)', 
+                    'Nova Dimensão (mm)', 'Peso Padrão (kg/m)', 
+                    'Peso Calculado', 'Diferença (Sucata)'
+                ]
+                
+                # Remove colunas extras do merge
+                df_final = df_final[cols_order]
+
+                # --- Exibição ---
+                st.success("Cálculos realizados com sucesso!")
+                
+                # Resumo
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Itens", len(df_final))
+                c2.metric("Peso Total", f"{df_final['Peso Etiqueta'].sum():.2f} kg")
+                c3.metric("Sucata Total", f"{df_final['Diferença (Sucata)'].sum():.2f} kg", delta_color="inverse")
+
+                # Tabela de Resultados
+                st.dataframe(
+                    df_final.style.format({
+                        'Peso Etiqueta': '{:.2f}', 
+                        'Peso Padrão (kg/m)': '{:.2f}',
+                        'Peso Calculado': '{:.2f}',
+                        'Diferença (Sucata)': '{:.2f}'
+                    }),
+                    use_container_width=True
+                )
+
+                # Download
+                buffer = io.BytesIO()
+                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                    df_final.to_excel(writer, index=False)
+                
+                st.download_button(
+                    label="📥 BAIXAR EXCEL PRONTO",
+                    data=buffer.getvalue(),
+                    file_name="Relatorio_Sucata_Manual.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary"
+                )
