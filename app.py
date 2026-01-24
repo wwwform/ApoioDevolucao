@@ -4,327 +4,241 @@ import google.generativeai as genai
 import PIL.Image
 import io
 import json
-import time
 
-# --- 1. CONFIGURAÇÃO DA PÁGINA ---
+# --- Configuração da Página ---
 st.set_page_config(
-    page_title="Sistema de Devolução | Brametal",
-    page_icon="🏭",
+    page_title="Relatório de Devolução",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# --- 2. ESTILIZAÇÃO (CSS) ---
-st.markdown("""
-<style>
-    /* Fundo e Fontes */
-    .stApp {
-        background-color: #f8fafc;
-    }
-    h1, h2, h3 {
-        color: #0f172a;
-        font-family: 'Segoe UI', sans-serif;
-    }
-    
-    /* Uploaders */
-    .stFileUploader {
-        background-color: white;
-        border: 1px dashed #cbd5e1;
-        border-radius: 8px;
-        padding: 15px;
-    }
-    
-    /* Botão Principal */
-    .stButton>button {
-        background-color: #2563eb;
-        color: white;
-        font-weight: 600;
-        border-radius: 6px;
-        height: 3.5rem;
-        width: 100%;
-        border: none;
-        transition: all 0.2s;
-    }
-    .stButton>button:hover {
-        background-color: #1d4ed8;
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-        color: white;
-    }
-    
-    /* Métricas */
-    div[data-testid="stMetric"] {
-        background-color: white;
-        padding: 15px;
-        border-radius: 10px;
-        border: 1px solid #e2e8f0;
-        box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1);
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# --- 3. AUTENTICAÇÃO E SIDEBAR ---
+# --- Barra Lateral de Controle ---
 with st.sidebar:
-    st.header("⚙️ Configurações")
+    st.header("Parâmetros de Entrada")
     
-    # Verifica se a chave está nos segredos do servidor
+    # 1. Autenticação
     if "GEMINI_API_KEY" in st.secrets:
         api_key = st.secrets["GEMINI_API_KEY"]
-        st.success("✅ Licença Ativa (Server)")
     else:
-        # Fallback para teste local
-        api_key = st.text_input("Chave API (Gemini)", type="password")
-        if not api_key:
-            st.warning("Insira a chave para continuar.")
+        api_key = st.text_input("Chave de API", type="password")
 
     st.markdown("---")
-    st.markdown("### 📝 Instruções")
-    st.info(
-        "1. Carregue a **Planilha SAP**.\n"
-        "2. Carregue as **Fotos**.\n"
-        "3. Clique em **Iniciar Processamento**."
-    )
-    st.caption("Versão 4.0 (Pro Vision)")
+    
+    # 2. Uploads
+    st.subheader("Arquivos")
+    file_sap = st.file_uploader("1. Base SAP (.xlsx/.csv)", type=['xlsx', 'xls', 'csv'])
+    uploaded_images = st.file_uploader("2. Fotos das Etiquetas", type=['png', 'jpg', 'jpeg'], accept_multiple_files=True)
+    
+    st.markdown("---")
+    
+    # 3. Botão de Execução
+    btn_processar = st.button("Gerar Relatório", type="primary", use_container_width=True)
 
-# --- 4. INTERFACE PRINCIPAL ---
+# --- Funções do Sistema ---
 
-st.title("🏗️ Sistema de Devolução e Sucata")
-st.markdown("Extração inteligente de dados de etiquetas e cruzamento automático com base SAP.")
-st.markdown("---")
+def limpar_json(texto):
+    """Limpa a resposta da IA para garantir um JSON válido."""
+    texto = texto.replace("```json", "").replace("```", "").strip()
+    # Tenta encontrar o início e fim da lista ou objeto
+    if "{" in texto:
+        inicio = texto.find("{")
+        fim = texto.rfind("}") + 1
+        return texto[inicio:fim]
+    return texto
 
-col1, col2 = st.columns(2)
-
-with col1:
-    st.subheader("1. Base de Dados (SAP)")
-    file_sap = st.file_uploader(
-        "Arraste a planilha de pesos aqui", 
-        type=['xlsx', 'xls', 'csv'],
-        key="sap"
-    )
-
-with col2:
-    st.subheader("2. Fotos das Etiquetas")
-    uploaded_images = st.file_uploader(
-        "Selecione as fotos (múltiplos arquivos)", 
-        type=['png', 'jpg', 'jpeg'], 
-        accept_multiple_files=True,
-        key="imgs"
-    )
-
-# --- 5. FUNÇÕES DE NEGÓCIO ---
-
-def carregar_sap_e_limpar(file):
-    """Carrega o Excel SAP e retorna apenas colunas úteis"""
+def carregar_base_sap(arquivo):
     try:
-        if file.name.endswith('.csv'):
-            df = pd.read_csv(file)
+        if arquivo.name.endswith('.csv'):
+            df = pd.read_csv(arquivo)
         else:
-            df = pd.read_excel(file)
+            df = pd.read_excel(arquivo)
         
-        # Remove espaços em branco dos nomes das colunas
+        # Padronização de colunas
         df.columns = df.columns.str.strip()
         
-        # Validação de colunas
-        cols_necessarias = ['Produto', 'Peso por Metro']
-        if not all(col in df.columns for col in cols_necessarias):
-            st.error(f"A planilha deve conter as colunas: {cols_necessarias}")
-            return None
+        # Validação mínima
+        colunas_esperadas = ['Produto', 'Peso por Metro']
+        if not all(col in df.columns for col in colunas_esperadas):
+            return None, f"Colunas obrigatórias ausentes. Necessário: {colunas_esperadas}"
             
-        # Garante tipo inteiro para cruzamento
         df['Produto'] = pd.to_numeric(df['Produto'], errors='coerce').fillna(0).astype(int)
-        
-        return df[['Produto', 'Peso por Metro']]
+        return df[['Produto', 'Peso por Metro']], None
     except Exception as e:
-        st.error(f"Erro ao ler arquivo SAP: {str(e)}")
-        return None
+        return None, str(e)
 
-def calcular_arredondamento_500mm(tamanho_mm):
-    """Regra: Arredonda para baixo no múltiplo de 500mm mais próximo"""
+def calcular_dimensao_corte(valor_mm):
+    """Aplica regra de corte: múltiplos de 500mm arredondados para baixo."""
     try:
-        val = int(float(tamanho_mm))
-        return (val // 500) * 500
+        valor = int(float(valor_mm))
+        return (valor // 500) * 500
     except:
         return 0
 
-# --- 6. PROCESSAMENTO ---
+# --- Processamento Principal ---
 
-st.markdown("###")
-btn_processar = st.button("🚀 INICIAR PROCESSAMENTO INTELIGENTE")
+st.title("Sistema de Controle de Devolução")
 
 if btn_processar:
-    # Validações Iniciais
     if not api_key:
-        st.error("❌ Chave de API não encontrada.")
+        st.error("Erro: Chave de API não configurada.")
         st.stop()
-    
+        
     if not file_sap or not uploaded_images:
-        st.warning("⚠️ Por favor, carregue a planilha SAP e as Imagens antes de processar.")
+        st.warning("Atenção: É necessário carregar a Base SAP e as Fotos para prosseguir.")
         st.stop()
 
-    # Início do Fluxo
-    status_container = st.container()
+    # Container de Status
+    status_msg = st.empty()
+    bar_progresso = st.progress(0)
+
+    # 1. Carregamento SAP
+    status_msg.text("Carregando base de dados SAP...")
+    df_sap, erro_sap = carregar_base_sap(file_sap)
     
-    with status_container:
-        with st.status("🤖 Iniciando motor de IA...", expanded=True) as status:
+    if erro_sap:
+        st.error(f"Erro na leitura do SAP: {erro_sap}")
+        st.stop()
+
+    # 2. Configuração AI
+    genai.configure(api_key=api_key)
+    # Modelo PRO é obrigatório para ler manuscritos difíceis
+    model = genai.GenerativeModel('gemini-1.5-pro')
+    
+    dados_processados = []
+    
+    # 3. Loop de Processamento de Imagens
+    total_imgs = len(uploaded_images)
+    
+    for i, img_file in enumerate(uploaded_images):
+        status_msg.text(f"Processando item {i+1} de {total_imgs}: {img_file.name}")
+        
+        try:
+            image = PIL.Image.open(img_file)
             
-            # 1. Carregar SAP
-            st.write("📂 Lendo e validando planilha SAP...")
-            df_sap = carregar_sap_e_limpar(file_sap)
-            if df_sap is None:
-                status.update(label="Falha na leitura do SAP", state="error")
-                st.stop()
+            # Prompt Técnico Específico para Etiquetas Brametal
+            prompt = """
+            Extraia os dados técnicos desta etiqueta industrial de aço.
+            Saída obrigatória: Objeto JSON único.
             
-            # 2. Configurar Gemini (Modelo PRO para melhor leitura)
-            st.write("🧠 Configurando visão computacional (Modelo PRO)...")
-            genai.configure(api_key=api_key)
-            model = genai.GenerativeModel('gemini-1.5-pro')
+            Campos a extrair:
+            1. "Reserva": Número manuscrito (feito a caneta/marcador) sobre a peça ou etiqueta. Geralmente tem 7 dígitos (ex: 3800994, 3603907). Se ilegível, retorne "".
+            2. "descricao": Texto exato abaixo de "Desc. Material" (ex: L 90 X 6 A572-GR60).
+            3. "codigo": Número abaixo de "Cod. Material" (ex: 1100001788). Apenas números.
+            4. "qtd": Número em "Quantidade".
+            5. "peso": Número em "Peso". Use ponto para decimal.
+            6. "tamanho": Número em "Dimensões" (mm). Apenas números inteiros.
+
+            Se houver múltiplas etiquetas, foque na mais legível ou central.
+            """
             
-            dados_extraidos = []
-            progress_bar = st.progress(0)
+            response = model.generate_content([prompt, image])
+            texto_json = limpar_json(response.text)
             
-            # 3. Loop pelas Imagens
-            total_imgs = len(uploaded_images)
-            for index, img_file in enumerate(uploaded_images):
-                st.write(f"👁️ Analisando imagem {index+1}/{total_imgs}: {img_file.name}...")
-                try:
-                    image = PIL.Image.open(img_file)
-                    
-                    # Prompt "Agressivo" para manuscritos e sujeira
-                    prompt = """
-                    Atue como um especialista em OCR industrial. Analise esta etiqueta de aço.
-                    Atenção: A etiqueta pode estar suja, rasgada ou com anotações manuais fora da área impressa.
-                    
-                    Extraia um JSON estrito com os campos:
-                    1. "Reserva": O número escrito à MÃO (caneta/marcador). Pode estar rabiscado. Se não houver, deixe vazio.
-                    2. "Descrição Material": O texto descritivo (Ex: L 90 X 6...).
-                    3. "Código Material": O código numérico (Ex: 11000...).
-                    4. "Quantidade": Inteiro. Se não explícito, assuma 1.
-                    5. "Peso": Decimal (ponto).
-                    6. "Tamanho": Inteiro em milímetros (mm).
-                    
-                    Se a imagem estiver ruim, use inferência lógica. Retorne APENAS o JSON.
-                    """
-                    
-                    response = model.generate_content([prompt, image])
-                    text_response = response.text.replace("```json", "").replace("```", "").strip()
-                    
-                    # Limpeza de JSON (busca o primeiro { e o último })
-                    if "{" in text_response:
-                        json_str = text_response[text_response.find("{"):text_response.rfind("}")+1]
-                        data = json.loads(json_str)
-                        
-                        # Normaliza para lista se vier um único objeto
-                        if isinstance(data, dict):
-                            data = [data]
-                            
-                        for item in data:
-                            # Adiciona metadados
-                            item['Arquivo Origem'] = img_file.name
-                            dados_extraidos.append(item)
-                    
-                except Exception as e:
-                    print(f"Erro silencioso na imagem {img_file.name}: {e}")
+            dados_item = json.loads(texto_json)
+            
+            # Normalização de chaves para lista
+            if isinstance(dados_item, dict):
+                dados_processados.append(dados_item)
+            elif isinstance(dados_item, list):
+                dados_processados.extend(dados_item)
                 
-                # Atualiza barra
-                progress_bar.progress((index + 1) / total_imgs)
+        except Exception as e:
+            # Log de erro silencioso para não interromper o lote
+            print(f"Falha na imagem {img_file.name}: {e}")
+            
+        # Atualiza barra
+        bar_progresso.progress((i + 1) / total_imgs)
 
-            # 4. Cálculos e Cruzamento
-            if dados_extraidos:
-                st.write("📐 Realizando cálculos de engenharia...")
-                df_etiquetas = pd.DataFrame(dados_extraidos)
-                
-                # Tratamento de Tipos
-                cols_numericas = ['Código Material', 'Quantidade', 'Peso', 'Tamanho']
-                for col in cols_numericas:
-                    if col in df_etiquetas.columns:
-                        df_etiquetas[col] = pd.to_numeric(df_etiquetas[col], errors='coerce').fillna(0)
-                
-                # Conversão para Int onde cabe
-                if 'Código Material' in df_etiquetas.columns:
-                    df_etiquetas['Código Material'] = df_etiquetas['Código Material'].astype(int)
-                if 'Quantidade' in df_etiquetas.columns:
-                    df_etiquetas['Quantidade'] = df_etiquetas['Quantidade'].astype(int)
+    status_msg.empty()
+    bar_progresso.empty()
 
-                # Merge (Cruzamento)
-                df_final = df_etiquetas.merge(
-                    df_sap, 
-                    left_on='Código Material', 
-                    right_on='Produto', 
-                    how='left'
-                )
+    # 4. Consolidação e Cálculos
+    if dados_processados:
+        df_resultado = pd.DataFrame(dados_processados)
+        
+        # Tratamento de Tipos
+        cols_num = ['codigo', 'qtd', 'peso', 'tamanho']
+        for c in cols_num:
+            if c in df_resultado.columns:
+                df_resultado[c] = pd.to_numeric(df_resultado[c], errors='coerce').fillna(0)
+        
+        if 'codigo' in df_resultado.columns:
+            df_resultado['codigo'] = df_resultado['codigo'].astype(int)
+        
+        # Cruzamento (Merge) com SAP
+        df_final = df_resultado.merge(
+            df_sap, 
+            left_on='codigo', 
+            right_on='Produto', 
+            how='left'
+        )
+        
+        # Renomear colunas para padrão de saída
+        df_final.rename(columns={
+            'Reserva': 'Reserva (Caneta)',
+            'descricao': 'Descrição Material',
+            'codigo': 'Código Material',
+            'qtd': 'Quantidade',
+            'peso': 'Peso Etiqueta',
+            'tamanho': 'Tamanho (mm)',
+            'Peso por Metro': 'Peso Padrão (SAP)'
+        }, inplace=True)
+        
+        # Preencher nulos do SAP com 0
+        df_final['Peso Padrão (SAP)'] = df_final['Peso Padrão (SAP)'].fillna(0.0)
+        
+        # Cálculos de Engenharia
+        df_final['Nova Dimensão (mm)'] = df_final['Tamanho (mm)'].apply(calcular_dimensao_corte)
+        
+        df_final['Peso Recalculado'] = (
+            (df_final['Nova Dimensão (mm)'] / 1000.0) * df_final['Peso Padrão (SAP)'] * df_final['Quantidade']
+        )
+        
+        df_final['Diferença (Sucata)'] = df_final['Peso Etiqueta'] - df_final['Peso Recalculado']
+        
+        # Seleção e Ordenação de Colunas
+        colunas_finais = [
+            'Reserva (Caneta)', 'Descrição Material', 'Código Material', 'Quantidade',
+            'Peso Etiqueta', 'Tamanho (mm)', 'Nova Dimensão (mm)', 
+            'Peso Padrão (SAP)', 'Peso Recalculado', 'Diferença (Sucata)'
+        ]
+        
+        # Garante integridade das colunas
+        for col in colunas_finais:
+            if col not in df_final.columns:
+                df_final[col] = 0
                 
-                # Renomeia e Preenche Nulos
-                df_final.rename(columns={'Peso por Metro': 'Peso Padrão (SAP)'}, inplace=True)
-                df_final['Peso Padrão (SAP)'] = df_final['Peso Padrão (SAP)'].fillna(0.0)
-                
-                # Cálculos Finais (Regras de Negócio)
-                df_final['Nova Dimensão (mm)'] = df_final['Tamanho'].apply(calcular_arredondamento_500mm)
-                
-                # Peso Calc = (Nova Dim / 1000) * Peso SAP * Qtd
-                df_final['Peso Calculado'] = (
-                    (df_final['Nova Dimensão (mm)'] / 1000.0) * df_final['Peso Padrão (SAP)'] * df_final['Quantidade']
-                )
-                
-                # Diferença (Sucata)
-                if 'Peso' in df_final.columns:
-                    df_final['Diferença (Sucata)'] = df_final['Peso'] - df_final['Peso Calculado']
-                else:
-                    df_final['Diferença (Sucata)'] = 0.0
+        df_apresentacao = df_final[colunas_finais]
 
-                # Organização das Colunas
-                colunas_finais = [
-                    'Reserva', 'Descrição Material', 'Código Material', 
-                    'Quantidade', 'Peso', 'Tamanho', 
-                    'Nova Dimensão (mm)', 'Peso Padrão (SAP)', 
-                    'Peso Calculado', 'Diferença (Sucata)'
-                ]
-                
-                # Garante que colunas existem
-                for col in colunas_finais:
-                    if col not in df_final.columns:
-                        df_final[col] = "-"
-                
-                df_display = df_final[colunas_finais]
+        # --- Exibição de Resultados ---
+        
+        # Métricas Consolidadas
+        col_m1, col_m2, col_m3 = st.columns(3)
+        col_m1.metric("Itens Processados", len(df_apresentacao))
+        col_m2.metric("Peso Total (Etiqueta)", f"{df_apresentacao['Peso Etiqueta'].sum():.2f} kg")
+        col_m3.metric("Total Sucata", f"{df_apresentacao['Diferença (Sucata)'].sum():.2f} kg")
+        
+        st.markdown("### Detalhamento")
+        st.dataframe(
+            df_apresentacao, 
+            use_container_width=True,
+            hide_index=True
+        )
+        
+        # Exportação Excel
+        buffer = io.BytesIO()
+        with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+            df_apresentacao.to_excel(writer, index=False)
+            
+        st.download_button(
+            label="Baixar Relatório Excel (.xlsx)",
+            data=buffer.getvalue(),
+            file_name="Relatorio_Devolucao.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        
+    else:
+        st.error("Não foi possível extrair dados válidos das imagens fornecidas. Verifique a qualidade das fotos.")
 
-                status.update(label="Processamento Concluído com Sucesso!", state="complete", expanded=False)
-                
-                # --- RESULTADOS VISUAIS ---
-                st.markdown("### 📊 Relatório Final")
-                
-                # Cards de Resumo
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("Etiquetas Lidas", len(df_display))
-                m2.metric("Peso Original", f"{df_display['Peso'].sum():.2f} kg")
-                m3.metric("Peso Calculado", f"{df_display['Peso Calculado'].sum():.2f} kg")
-                
-                total_sucata = df_display['Diferença (Sucata)'].sum()
-                m4.metric("Diferença (Sucata)", f"{total_sucata:.2f} kg", delta_color="inverse")
-                
-                # Tabela Interativa
-                st.data_editor(
-                    df_display,
-                    column_config={
-                        "Peso": st.column_config.NumberColumn(format="%.2f kg"),
-                        "Peso Calculado": st.column_config.NumberColumn(format="%.2f kg"),
-                        "Diferença (Sucata)": st.column_config.NumberColumn(format="%.2f kg"),
-                    },
-                    use_container_width=True,
-                    height=400
-                )
-                
-                # Botão Download
-                buffer = io.BytesIO()
-                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                    df_display.to_excel(writer, index=False)
-                
-                st.download_button(
-                    label="📥 BAIXAR RELATÓRIO (EXCEL)",
-                    data=buffer.getvalue(),
-                    file_name="Relatorio_Brametal_Final.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    type="primary"
-                )
-
-            else:
-                st.error("Não foi possível extrair dados das imagens. Tente novamente com fotos mais nítidas.")
-
-    st.balloons()
+else:
+    st.info("Aguardando início do processamento...")
