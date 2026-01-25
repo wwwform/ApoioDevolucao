@@ -78,7 +78,7 @@ else:
 # --- 6. TABELA DE ENTRADA ---
 if 'data_input' not in st.session_state:
     st.session_state.data_input = pd.DataFrame(
-        [{"Reserva": "", "Cód. SAP": None, "Qtd": 1, "Peso Balança (kg)": 0.0, "Tamanho (mm)": 0}],
+        [{"Reserva": "", "Cód. SAP": None, "Qtd": 1, "Peso Real (kg)": 0.0, "Tamanho (mm)": 0}],
     )
 
 with st.container():
@@ -123,12 +123,12 @@ with col_btn2:
             df_final['Peso Teórico (Calc)'] = (
                 (df_final['Nova Dimensão (mm)'] / 1000.0) * df_final['Peso por Metro'] * df_final['Qtd']
             )
-            df_final['Sucata (Dif)'] = df_final['Peso Balança (kg)'] - df_final['Peso Teórico (Calc)']
+            df_final['Sucata (Dif)'] = df_final['Peso Real (kg)'] - df_final['Peso Teórico (Calc)']
 
             # Organização
             cols_output = [
                 'Reserva', 'Cód. SAP', 'Descrição do produto', 'Qtd', 
-                'Peso Balança (kg)', 'Tamanho (mm)', 
+                'Peso Real (kg)', 'Tamanho (mm)', 
                 'Nova Dimensão (mm)', 'Peso Teórico (Calc)', 'Sucata (Dif)'
             ]
             df_view = df_final[cols_output]
@@ -141,7 +141,7 @@ with col_btn2:
             t1.metric("Itens", len(df_view))
             
             # Formatação para exibição na tela (mantendo ponto do Python para métrica funcionar)
-            t2.metric("Peso Total", f"{df_view['Peso Balança (kg)'].sum():.2f} kg")
+            t2.metric("Peso Total", f"{df_view['Peso Real (kg)'].sum():.2f} kg")
             t3.metric("Sucata Total", f"{df_view['Sucata (Dif)'].sum():.2f} kg")
 
             # Tabela Visual
@@ -149,7 +149,7 @@ with col_btn2:
 
             # Exportação Excel (Formatado BR)
             df_export = df_view.copy()
-            cols_fmt = ['Peso Balança (kg)', 'Peso Teórico (Calc)', 'Sucata (Dif)']
+            cols_fmt = ['Peso Real (kg)', 'Peso Teórico (Calc)', 'Sucata (Dif)']
             for col in cols_fmt:
                 df_export[col] = df_export[col].apply(formatar_brasileiro)
 
