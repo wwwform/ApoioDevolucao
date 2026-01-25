@@ -55,13 +55,13 @@ def regra_corte(mm):
 
 # --- 4. BARRA LATERAL ---
 with st.sidebar:
-    st.header("📂 Arquivo SAP")
+    st.header("📂 Planilha Peso Teórico")
     file_sap = st.file_uploader("Carregue a tabela aqui", type=['xlsx', 'xls', 'csv'])
     st.caption("A tabela deve conter: Produto, Descrição e Peso por Metro.")
 
 # --- 5. TELA PRINCIPAL ---
 st.title("🏭 Calculadora de Devolução")
-st.markdown("### 1. Digitação dos Dados")
+st.markdown("### 1. Informe os Dados da Reserva Abaixo")
 
 # Validação do Arquivo SAP
 if not file_sap:
@@ -73,7 +73,7 @@ if df_sap is None:
     st.error("❌ ERRO: O arquivo SAP não pôde ser lido. Verifique o formato.")
     st.stop()
 else:
-    st.success("✅ Base SAP carregada com sucesso!")
+    st.success("✅ Planilha Peso Teórico Carregada com Sucesso!")
 
 # --- 6. TABELA DE ENTRADA ---
 if 'data_input' not in st.session_state:
