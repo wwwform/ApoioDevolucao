@@ -185,3 +185,4 @@ if st.session_state.lista_itens:
             df_export.to_excel(writer, index=False)
             
         st.download_button("📥 Baixar Relatório Excel", buffer.getvalue(), "Relatorio_Scanner.xlsx")
+        
