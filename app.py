@@ -3,36 +3,49 @@ import pandas as pd
 import io
 import os
 
-# --- 1. CONFIGURAÇÃO VISUAL ---
-st.set_page_config(page_title="Scanner Devolução", layout="wide")
+# --- 1. CONFIGURAÇÃO VISUAL BLINDADA ---
+st.set_page_config(page_title="Scanner Pro", layout="wide")
 
+# CSS Forçado: Garante fundo claro e texto preto independente do PC do usuário
 st.markdown("""
 <style>
-    /* Tema Claro Forçado para Legibilidade */
+    /* Força Fundo Branco e Texto Preto */
     .stApp {
-        background-color: #f8fafc;
-        color: #0f172a;
+        background-color: #ffffff !important;
+        color: #000000 !important;
     }
-    .stTextInput input {
-        background-color: #ffffff;
-        color: #000000;
-        border: 1px solid #cbd5e1;
+    
+    /* Inputs */
+    .stTextInput input, .stNumberInput input {
+        background-color: #f1f5f9 !important;
+        color: #000000 !important;
+        border: 1px solid #cbd5e1 !important;
     }
+    
+    /* Tabelas */
     div[data-testid="stDataFrame"] {
-        background-color: #ffffff;
-        border: 1px solid #e2e8f0;
+        background-color: #ffffff !important;
+        border: 1px solid #000000 !important;
     }
+    
+    /* Botões */
     .stButton>button {
-        background-color: #0f172a;
-        color: #ffffff;
+        background-color: #000000 !important;
+        color: #ffffff !important;
         border: none;
         height: 3rem;
-    }
-    /* Destaque Scanner */
-    div[data-testid="stTextInput"] label {
-        font-size: 1.2rem;
         font-weight: bold;
-        color: #0284c7;
+    }
+    
+    /* Textos e Labels */
+    h1, h2, h3, p, label {
+        color: #000000 !important;
+    }
+    
+    /* Destaque Campo Scanner */
+    div[data-testid="stTextInput"] label {
+        color: #2563eb !important; /* Azul forte */
+        font-size: 1.3rem !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -40,7 +53,7 @@ st.markdown("""
 # --- 2. FUNÇÕES ---
 
 def formatar_br(valor):
-    """3 casas decimais: 1.234,567"""
+    """3 casas decimais (1.000,000)"""
     try:
         if pd.isna(valor) or valor == "": return "0,000"
         val = float(valor)
@@ -48,61 +61,76 @@ def formatar_br(valor):
     except: return str(valor)
 
 @st.cache_data
-def carregar_base_sap():
-    """Carrega 'base_sap.xlsx' direto do GitHub (pasta do script)"""
-    
-    # Esta linha garante que ele ache o arquivo onde quer que o script esteja (PC ou Nuvem)
-    pasta_script = os.path.dirname(os.path.abspath(__file__))
-    caminho_arquivo = os.path.join(pasta_script, "base_sap.xlsx")
-    
-    if os.path.exists(caminho_arquivo):
-        try:
-            df = pd.read_excel(caminho_arquivo)
-            df.columns = df.columns.str.strip()
-            df['Produto'] = pd.to_numeric(df['Produto'], errors='coerce').fillna(0).astype(int)
-            
-            # Tratamento se vier como texto
-            if df['Peso por Metro'].dtype == 'object':
-                 df['Peso por Metro'] = df['Peso por Metro'].str.replace(',', '.').astype(float)
-            
-            return df[['Produto', 'Descrição do produto', 'Peso por Metro']], None
-        except Exception as e:
-            return None, f"Erro ao ler Excel: {str(e)}"
-    
-    return None, "Arquivo 'base_sap.xlsx' não encontrado no repositório."
+def carregar_sap(caminho_ou_arquivo):
+    """Função genérica que lê tanto arquivo do GitHub quanto Upload manual"""
+    try:
+        if isinstance(caminho_ou_arquivo, str): # Se for caminho do GitHub
+            if caminho_ou_arquivo.endswith('.csv'):
+                try: df = pd.read_csv(caminho_ou_arquivo, sep=';', decimal=',')
+                except: df = pd.read_csv(caminho_ou_arquivo)
+            else:
+                df = pd.read_excel(caminho_ou_arquivo)
+        else: # Se for Upload manual
+            if caminho_ou_arquivo.name.endswith('.csv'):
+                try: df = pd.read_csv(caminho_ou_arquivo, sep=';', decimal=',')
+                except: df = pd.read_csv(caminho_ou_arquivo)
+            else:
+                df = pd.read_excel(caminho_ou_arquivo)
+
+        df.columns = df.columns.str.strip()
+        df['Produto'] = pd.to_numeric(df['Produto'], errors='coerce').fillna(0).astype(int)
+        
+        if df['Peso por Metro'].dtype == 'object':
+             df['Peso por Metro'] = df['Peso por Metro'].str.replace(',', '.').astype(float)
+        
+        return df[['Produto', 'Descrição do produto', 'Peso por Metro']]
+    except Exception as e:
+        return None
 
 def regra_corte(mm):
     try: return (int(float(mm)) // 500) * 500
     except: return 0
 
-# --- 3. ESTADO ---
+# --- 3. INICIALIZAÇÃO E CARREGAMENTO ---
 if 'lista_itens' not in st.session_state:
     st.session_state.lista_itens = []
 
-# --- 4. CARREGAMENTO AUTOMÁTICO ---
-df_sap, erro_msg = carregar_base_sap()
+# TENTA CARREGAR AUTOMÁTICO
+pasta_script = os.path.dirname(os.path.abspath(__file__))
+caminho_fixo = os.path.join(pasta_script, "base_sap.xlsx")
+df_sap = None
+modo_carregamento = "Indefinido"
 
-# --- 5. INTERFACE ---
-st.title("🏭 Scanner de Devolução (Web)")
+if os.path.exists(caminho_fixo):
+    df_sap = carregar_sap(caminho_fixo)
+    modo_carregamento = "Automático (GitHub)"
+
+# SE FALHAR O AUTOMÁTICO, PEDE MANUAL (FALLBACK)
+st.title("🏭 Scanner de Devolução")
 
 if df_sap is None:
-    st.error("❌ ERRO CRÍTICO")
-    st.warning(f"O sistema não encontrou o arquivo `base_sap.xlsx`.")
-    st.info("Solução: Faça o upload do arquivo `base_sap.xlsx` para o seu GitHub, na mesma pasta do `app.py`.")
-    st.stop()
+    st.warning("⚠️ Arquivo padrão não encontrado. Carregue a base SAP abaixo para continuar:")
+    arquivo_upload = st.file_uploader("Upload Base SAP", type=['xlsx', 'csv'])
+    
+    if arquivo_upload:
+        df_sap = carregar_sap(arquivo_upload)
+        modo_carregamento = "Manual (Upload)"
+    else:
+        st.stop() # Para aqui até o usuário subir o arquivo
 
-# Diagnóstico discreto
-st.success(f"✅ Sistema Online | Base SAP carregada ({len(df_sap)} produtos)")
+# Feedback discreto
+st.toast(f"Base carregada via: {modo_carregamento}", icon="✅")
 
-# --- 6. LÓGICA SCANNER ---
+# --- 4. LÓGICA DO SCANNER ---
 def adicionar_item():
     codigo = st.session_state.input_scanner
     if codigo:
         try:
-            # Limpa espaços e tenta converter
             cod_limpo = str(codigo).strip()
-            cod_int = int(cod_limpo)
+            # Remove prefixos comuns de QR Code se houver (ex: 'P:123')
+            if ":" in cod_limpo: cod_limpo = cod_limpo.split(":")[-1]
             
+            cod_int = int(cod_limpo)
             produto = df_sap[df_sap['Produto'] == cod_int]
             
             if not produto.empty:
@@ -114,33 +142,30 @@ def adicionar_item():
                     "Tamanho (mm)": 0,
                     "Peso/m": produto.iloc[0]['Peso por Metro']
                 }
-                # Insere no topo
                 st.session_state.lista_itens.insert(0, novo)
-                st.toast(f"Item {cod_int} adicionado!", icon="✅")
+                st.toast(f"Item {cod_int} OK!", icon="📦")
             else:
-                st.toast(f"Produto {cod_int} não encontrado na planilha.", icon="⚠️")
+                st.toast(f"Produto {cod_int} não existe na base SAP carregada.", icon="🚫")
         except:
-            st.toast("Código inválido (apenas números).", icon="❌")
+            st.toast("Erro ao ler código. Tente novamente.", icon="❌")
         
-        # Limpa campo
         st.session_state.input_scanner = ""
 
-# Input Scanner
-st.text_input("Bipar Código Aqui:", key="input_scanner", on_change=adicionar_item)
+# Input Scanner (Foco Principal)
+st.text_input("BIPAR CÓDIGO AQUI:", key="input_scanner", on_change=adicionar_item)
 
-if st.button("🗑️ Limpar Lista"):
+if st.button("Limpar Lista"):
     st.session_state.lista_itens = []
     st.rerun()
 
 st.markdown("---")
 
-# --- 7. TABELA E RESULTADOS ---
+# --- 5. TABELA DE EDIÇÃO ---
 if st.session_state.lista_itens:
-    st.markdown("### Itens Lidos")
-    
     df_atual = pd.DataFrame(st.session_state.lista_itens)
     
-    # Editor
+    st.info("👇 Digite o PESO REAL e o TAMANHO na tabela:")
+    
     df_editado = st.data_editor(
         df_atual,
         num_rows="dynamic",
@@ -174,15 +199,14 @@ if st.session_state.lista_itens:
         c3.metric("Sucata Total", formatar_br(df_final['Sucata'].sum()) + " kg")
 
         # Exportação Excel
-        df_export = df_final[['Cód. SAP', 'Descrição', 'Qtd', 'Peso Balança (kg)', 'Tamanho (mm)', 'Nova Dimensão (mm)', 'Peso Teórico', 'Sucata']].copy()
+        colunas_finais = ['Cód. SAP', 'Descrição', 'Qtd', 'Peso Balança (kg)', 'Tamanho (mm)', 'Nova Dimensão (mm)', 'Peso Teórico', 'Sucata']
+        df_export = df_final[colunas_finais].copy()
         
-        # Formata para texto BR (1.234,567)
-        for c in ['Peso Balança (kg)', 'Peso Teórico', 'Sucata', 'Peso/m']:
+        for c in ['Peso Balança (kg)', 'Peso Teórico', 'Sucata']:
             df_export[c] = df_export[c].apply(formatar_br)
             
         buffer = io.BytesIO()
         with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
             df_export.to_excel(writer, index=False)
             
-        st.download_button("📥 Baixar Relatório Excel", buffer.getvalue(), "Relatorio_Scanner.xlsx")
-        
+        st.download_button("📥 BAIXAR EXCEL FINAL", buffer.getvalue(), "Relatorio_Scanner.xlsx")
