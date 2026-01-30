@@ -8,16 +8,13 @@ from datetime import datetime
 # --- CONFIGURAÇÃO ---
 st.set_page_config(page_title="Sistema Integrado Produção", layout="wide")
 
-# CSS (Respeitando o tema escuro, apenas destacando o necessário)
 st.markdown("""
 <style>
-    /* Destaque para o Scanner */
     div[data-testid="stTextInput"] label {
         font-size: 1.4rem;
         font-weight: bold;
         color: #3b82f6; 
     }
-    /* Botões grandes */
     .stButton>button {
         height: 3rem;
         font-weight: bold;
@@ -25,10 +22,11 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- 1. BANCO DE DADOS (SQLite) ---
+# --- 1. BANCO DE DADOS (Atualizado com colunas extras) ---
 def init_db():
-    conn = sqlite3.connect('dados_fabrica.db', check_same_thread=False)
+    conn = sqlite3.connect('dados_fabrica_v2.db', check_same_thread=False)
     c = conn.cursor()
+    # Adicionei 'nova_dimensao_mm' explicitamente
     c.execute('''
         CREATE TABLE IF NOT EXISTS producao (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -38,7 +36,8 @@ def init_db():
             descricao TEXT,
             qtd INTEGER,
             peso_real REAL,
-            tamanho_mm INTEGER,
+            tamanho_real_mm INTEGER,
+            tamanho_corte_mm INTEGER,
             peso_teorico REAL,
             sucata REAL
         )
@@ -47,11 +46,11 @@ def init_db():
     conn.close()
 
 def salvar_no_banco(dados):
-    conn = sqlite3.connect('dados_fabrica.db', check_same_thread=False)
+    conn = sqlite3.connect('dados_fabrica_v2.db', check_same_thread=False)
     c = conn.cursor()
     c.execute('''
-        INSERT INTO producao (data_hora, reserva, cod_sap, descricao, qtd, peso_real, tamanho_mm, peso_teorico, sucata)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO producao (data_hora, reserva, cod_sap, descricao, qtd, peso_real, tamanho_real_mm, tamanho_corte_mm, peso_teorico, sucata)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
         dados['Reserva'],
@@ -59,7 +58,8 @@ def salvar_no_banco(dados):
         dados['Descrição'],
         dados['Qtd'],
         dados['Peso Balança (kg)'],
-        dados['Tamanho (mm)'],
+        dados['Tamanho Real (mm)'],
+        dados['Tamanho Corte (mm)'], # Salva o valor já arredondado
         dados['Peso Teórico'],
         dados['Sucata']
     ))
@@ -67,13 +67,13 @@ def salvar_no_banco(dados):
     conn.close()
 
 def ler_banco():
-    conn = sqlite3.connect('dados_fabrica.db', check_same_thread=False)
+    conn = sqlite3.connect('dados_fabrica_v2.db', check_same_thread=False)
     df = pd.read_sql_query("SELECT * FROM producao ORDER BY id DESC", conn)
     conn.close()
     return df
 
 def limpar_banco():
-    conn = sqlite3.connect('dados_fabrica.db', check_same_thread=False)
+    conn = sqlite3.connect('dados_fabrica_v2.db', check_same_thread=False)
     c = conn.cursor()
     c.execute("DELETE FROM producao")
     conn.commit()
@@ -90,7 +90,11 @@ def formatar_br(valor):
     except: return str(valor)
 
 def regra_corte(mm):
-    try: return (int(float(mm)) // 500) * 500
+    """Aplica regra de múltiplos de 500mm para baixo"""
+    try:
+        valor = int(float(mm))
+        # Ex: 1255 // 500 = 2 -> 2 * 500 = 1000
+        return (valor // 500) * 500
     except: return 0
 
 @st.cache_data
@@ -113,7 +117,6 @@ def carregar_base_sap():
 st.sidebar.title("🔐 Acesso")
 modo_acesso = st.sidebar.radio("Selecione o Perfil:", ["Operador (Chão de Fábrica)", "Administrador (Escritório)"])
 
-# Carrega Base
 df_sap = carregar_base_sap()
 if df_sap is None:
     st.error("ERRO: `base_sap.xlsx` não encontrado.")
@@ -154,15 +157,26 @@ if modo_acesso == "Operador (Chão de Fábrica)":
                 st.rerun()
 
         elif st.session_state.wizard_step == 4:
-            comp = st.number_input("4. Comprimento (mm):", min_value=0, step=1, key="wiz_comp")
+            comp = st.number_input("4. Comprimento Real (mm):", min_value=0, step=1, key="wiz_comp")
+            
+            # Mostra prévia do cálculo para o operador conferir
+            if comp > 0:
+                novo_corte = regra_corte(comp)
+                st.caption(f"ℹ️ O sistema considerará: **{novo_corte} mm** (Múltiplo de 500)")
+            
             if st.button("✅ SALVAR E ENVIAR"):
                 peso_metro = st.session_state.wizard_data['Peso/m']
                 qtd_f = st.session_state.wizard_data['Qtd']
-                tamanho_f = comp
+                tamanho_real = comp
                 peso_balanca_f = st.session_state.wizard_data['Peso Balança (kg)']
                 
-                nova_dimensao = regra_corte(tamanho_f)
-                peso_teorico = (nova_dimensao / 1000.0) * peso_metro * qtd_f
+                # CÁLCULOS CORRIGIDOS
+                tamanho_corte = regra_corte(tamanho_real) # Aplica a regra
+                
+                # Peso Teórico = (Tamanho Corte / 1000) * Peso Metro * Qtd
+                peso_teorico = (tamanho_corte / 1000.0) * peso_metro * qtd_f
+                
+                # Sucata = Peso Real - Peso Teórico do Aproveitamento
                 sucata = peso_balanca_f - peso_teorico
                 
                 item_final = {
@@ -171,12 +185,13 @@ if modo_acesso == "Operador (Chão de Fábrica)":
                     "Descrição": st.session_state.wizard_data['Descrição'],
                     "Qtd": qtd_f,
                     "Peso Balança (kg)": peso_balanca_f,
-                    "Tamanho (mm)": tamanho_f,
+                    "Tamanho Real (mm)": tamanho_real,   # O que ele digitou
+                    "Tamanho Corte (mm)": tamanho_corte, # O calculado (500mm)
                     "Peso Teórico": peso_teorico,
                     "Sucata": sucata
                 }
                 salvar_no_banco(item_final)
-                st.toast("Dados enviados!", icon="🚀")
+                st.toast(f"Salvo! Corte considerado: {tamanho_corte}mm", icon="✂️")
                 st.session_state.wizard_data = {}
                 st.session_state.wizard_step = 0
                 st.session_state.input_scanner = ""
@@ -206,19 +221,13 @@ if modo_acesso == "Operador (Chão de Fábrica)":
         wizard_item()
 
     st.text_input("BIPAR CÓDIGO:", key="input_scanner", on_change=iniciar_bipagem)
-    st.info("ℹ️ Os dados são salvos automaticamente no banco de dados.")
 
 # ==============================================================================
 # TELA 2: ADMINISTRADOR
 # ==============================================================================
 elif modo_acesso == "Administrador (Escritório)":
     st.title("💻 Admin: Controle de Produção")
-    
-    # ---------------------------------------------------------
-    # CONFIGURAÇÃO DE SENHA AQUI
-    # ---------------------------------------------------------
-    SENHA_CORRETA = "Br@met4l" 
-    # ---------------------------------------------------------
+    SENHA_CORRETA = "Br@met4l"
 
     senha_digitada = st.sidebar.text_input("Senha Admin", type="password")
     
@@ -236,9 +245,25 @@ elif modo_acesso == "Administrador (Escritório)":
             c2.metric("Peso Total", formatar_br(df_banco['peso_real'].sum()) + " kg")
             c3.metric("Sucata Total", formatar_br(df_banco['sucata'].sum()) + " kg")
             
-            st.dataframe(df_banco, use_container_width=True)
+            # Mostra Tabela com as NOVAS colunas
+            # Renomeando para ficar bonito na tela
+            df_view = df_banco.rename(columns={
+                'tamanho_real_mm': 'Comp. Real (mm)',
+                'tamanho_corte_mm': 'Comp. Corte (500mm)',
+                'peso_real': 'Peso Balança',
+                'peso_teorico': 'Peso Teórico',
+                'sucata': 'Sucata'
+            })
             
+            st.dataframe(df_view, use_container_width=True)
+            
+            # Exportação Excel Completa
             df_export = df_banco.copy()
+            df_export.rename(columns={
+                'tamanho_real_mm': 'Comprimento Real (mm)',
+                'tamanho_corte_mm': 'Comprimento Considerado (mm)'
+            }, inplace=True)
+            
             for col in ['peso_real', 'peso_teorico', 'sucata']:
                 df_export[col] = df_export[col].apply(formatar_br)
                 
@@ -247,7 +272,7 @@ elif modo_acesso == "Administrador (Escritório)":
                 df_export.to_excel(writer, index=False)
                 
             col_d, col_l = st.columns([2,1])
-            col_d.download_button("📥 Baixar Excel", buffer.getvalue(), "Relatorio.xlsx", type="primary")
+            col_d.download_button("📥 Baixar Relatório Detalhado", buffer.getvalue(), "Relatorio_Producao.xlsx", type="primary")
             
             if col_l.button("🗑️ Limpar Banco", type="secondary"):
                 limpar_banco()
@@ -257,5 +282,3 @@ elif modo_acesso == "Administrador (Escritório)":
             st.info("Nenhum dado recebido.")
     elif senha_digitada:
         st.sidebar.error("Senha Incorreta")
-    else:
-        st.info("Digite a senha na barra lateral para acessar.")
