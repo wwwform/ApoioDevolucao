@@ -10,13 +10,16 @@ st.set_page_config(page_title="Sistema Integrado Produção", layout="wide")
 
 st.markdown("""
 <style>
-    div[data-testid="stTextInput"] label {
-        font-size: 1.4rem;
+    /* Aumenta o texto dos labels para facilitar leitura no tablet */
+    div[data-testid="stTextInput"] label, div[data-testid="stNumberInput"] label {
+        font-size: 1.5rem !important;
         font-weight: bold;
-        color: #3b82f6; 
+        color: #2563eb; 
     }
+    /* Deixa os botões mais altos para facilitar o toque */
     .stButton>button {
-        height: 3rem;
+        height: 3.5rem;
+        font-size: 1.2rem !important;
         font-weight: bold;
     }
 </style>
@@ -124,52 +127,54 @@ if df_sap is None:
 if modo_acesso == "Operador (Chão de Fábrica)":
     st.title("🏭 Operador: Bipagem")
 
-    # Inicializa variáveis
+    # Estados
     if 'wizard_data' not in st.session_state: st.session_state.wizard_data = {}
     if 'wizard_step' not in st.session_state: st.session_state.wizard_step = 0
-    # ID único para forçar limpeza dos campos a cada novo item
     if 'item_id' not in st.session_state: st.session_state.item_id = 0 
 
     @st.dialog("📦 Entrada de Material")
     def wizard_item():
         st.write(f"**Item:** {st.session_state.wizard_data.get('Cód. SAP')} - {st.session_state.wizard_data.get('Descrição')}")
         
-        # PASSO 1: RESERVA (Com Formulário para aceitar Enter)
+        # --- PASSO 1: RESERVA ---
         if st.session_state.wizard_step == 1:
             with st.form("form_reserva"):
-                # Key dinâmica para limpar campo quando muda o item
                 reserva = st.text_input("1. Nº da Reserva:", key=f"res_{st.session_state.item_id}")
-                if st.form_submit_button("Próximo >>"):
+                st.write("") # Espaço
+                # Botão Full Width para facilitar o toque
+                if st.form_submit_button("PRÓXIMO >>", use_container_width=True, type="primary"):
                     st.session_state.wizard_data['Reserva'] = reserva
                     st.session_state.wizard_step = 2
                     st.rerun()
 
-        # PASSO 2: QUANTIDADE (Com Formulário)
+        # --- PASSO 2: QUANTIDADE ---
         elif st.session_state.wizard_step == 2:
             with st.form("form_qtd"):
-                # Value padrão é 1, mas como o ID mudou, ele recria o componente limpo
-                qtd = st.number_input("2. Quantidade:", min_value=1, step=1, value=1, key=f"qtd_{st.session_state.item_id}")
-                if st.form_submit_button("Próximo >>"):
+                qtd = st.number_input("2. Quantidade (Peças):", min_value=1, step=1, value=1, key=f"qtd_{st.session_state.item_id}")
+                st.write("")
+                if st.form_submit_button("PRÓXIMO >>", use_container_width=True, type="primary"):
                     st.session_state.wizard_data['Qtd'] = qtd
                     st.session_state.wizard_step = 3
                     st.rerun()
 
-        # PASSO 3: PESO (Com Formulário)
+        # --- PASSO 3: PESO ---
         elif st.session_state.wizard_step == 3:
             with st.form("form_peso"):
-                peso = st.number_input("3. Peso (kg):", min_value=0.000, step=0.001, format="%.3f", key=f"peso_{st.session_state.item_id}")
-                if st.form_submit_button("Próximo >>"):
+                peso = st.number_input("3. Peso Real (kg):", min_value=0.000, step=0.001, format="%.3f", key=f"peso_{st.session_state.item_id}")
+                st.write("")
+                if st.form_submit_button("PRÓXIMO >>", use_container_width=True, type="primary"):
                     st.session_state.wizard_data['Peso Balança (kg)'] = peso
                     st.session_state.wizard_step = 4
                     st.rerun()
 
-        # PASSO 4: COMPRIMENTO (Com Formulário)
+        # --- PASSO 4: COMPRIMENTO ---
         elif st.session_state.wizard_step == 4:
             with st.form("form_comp"):
                 comp = st.number_input("4. Comprimento Real (mm):", min_value=0, step=1, key=f"comp_{st.session_state.item_id}")
+                st.write("")
                 
-                # Botão de Envio
-                if st.form_submit_button("✅ SALVAR E ENVIAR"):
+                # Botão Final Verde
+                if st.form_submit_button("✅ SALVAR E FINALIZAR", use_container_width=True, type="primary"):
                     # Processamento
                     peso_metro = st.session_state.wizard_data['Peso/m']
                     qtd_f = st.session_state.wizard_data['Qtd']
@@ -192,9 +197,9 @@ if modo_acesso == "Operador (Chão de Fábrica)":
                         "Sucata": sucata
                     }
                     salvar_no_banco(item_final)
-                    st.toast(f"Item salvo com sucesso!", icon="💾")
+                    st.toast(f"Item salvo!", icon="💾")
                     
-                    # Reseta tudo para o próximo
+                    # Reseta
                     st.session_state.wizard_data = {}
                     st.session_state.wizard_step = 0
                     st.session_state.input_scanner = ""
@@ -208,9 +213,7 @@ if modo_acesso == "Operador (Chão de Fábrica)":
                 cod_int = int(cod_limpo)
                 produto = df_sap[df_sap['Produto'] == cod_int]
                 if not produto.empty:
-                    # Incrementa o ID para garantir que os campos do Wizard venham limpos
-                    st.session_state.item_id += 1
-                    
+                    st.session_state.item_id += 1 # Novo ID para limpar formulários
                     st.session_state.wizard_data = {
                         "Cód. SAP": cod_int,
                         "Descrição": produto.iloc[0]['Descrição do produto'],
@@ -223,12 +226,11 @@ if modo_acesso == "Operador (Chão de Fábrica)":
             except:
                 st.session_state.input_scanner = ""
 
-    # Chama o Wizard se estiver ativo
     if st.session_state.wizard_step > 0:
         wizard_item()
 
     st.text_input("BIPAR CÓDIGO:", key="input_scanner", on_change=iniciar_bipagem)
-    st.caption("Ao bipar, uma janela abrirá. Use ENTER para avançar.")
+    st.info("ℹ️ Sistema pronto para uso em Tablet.")
 
 # ==============================================================================
 # TELA 2: ADMINISTRADOR
@@ -248,27 +250,23 @@ elif modo_acesso == "Administrador (Escritório)":
         df_banco = ler_banco()
         
         if not df_banco.empty:
-            # Layout de Métricas
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Total Itens", len(df_banco))
-            col2.metric("Peso Total", formatar_br(df_banco['peso_real'].sum()) + " kg")
-            col3.metric("Sucata Total", formatar_br(df_banco['sucata'].sum()) + " kg")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Itens", len(df_banco))
+            c2.metric("Peso Total", formatar_br(df_banco['peso_real'].sum()) + " kg")
+            c3.metric("Sucata Total", formatar_br(df_banco['sucata'].sum()) + " kg")
             
-            # Tabela Visual
+            # Tabela
             df_view = df_banco.rename(columns={
-                'reserva': 'Reserva', 'cod_sap': 'Cód. SAP', 'descricao': 'Descrição',
+                'reserva': 'Reserva', 'cod_sap': 'SAP', 'descricao': 'Descrição',
                 'qtd': 'Qtd', 'tamanho_real_mm': 'Comp. Real', 
-                'tamanho_corte_mm': 'Comp. Corte', 'peso_real': 'Peso Real',
-                'peso_teorico': 'Peso Teórico', 'sucata': 'Sucata'
+                'tamanho_corte_mm': 'Comp. Corte', 'peso_real': 'Peso',
+                'sucata': 'Sucata'
             })
-            st.dataframe(df_view[['Reserva', 'Cód. SAP', 'Descrição', 'Qtd', 'Peso Real', 'Comp. Real', 'Comp. Corte', 'Sucata']], use_container_width=True)
+            st.dataframe(df_view[['Reserva', 'SAP', 'Descrição', 'Qtd', 'Peso', 'Comp. Real', 'Comp. Corte', 'Sucata']], use_container_width=True)
             
-            # Download
+            # Excel
             df_export = df_banco.copy()
-            df_export.rename(columns={
-                'tamanho_real_mm': 'Comprimento Real (mm)',
-                'tamanho_corte_mm': 'Comprimento Considerado (mm)'
-            }, inplace=True)
+            df_export.rename(columns={'tamanho_real_mm': 'Comp. Real (mm)', 'tamanho_corte_mm': 'Comp. Considerado (mm)'}, inplace=True)
             for col in ['peso_real', 'peso_teorico', 'sucata']:
                 df_export[col] = df_export[col].apply(formatar_br)
                 
@@ -276,10 +274,12 @@ elif modo_acesso == "Administrador (Escritório)":
             with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                 df_export.to_excel(writer, index=False)
             
-            c_down, c_clear = st.columns([3, 1])
-            c_down.download_button("📥 Baixar Excel Completo", buffer.getvalue(), "Relatorio_Producao.xlsx", type="primary")
-            if c_clear.button("🗑️ Limpar Tudo", type="secondary"):
+            st.download_button("📥 Baixar Excel Completo", buffer.getvalue(), "Relatorio.xlsx", type="primary", use_container_width=True)
+            
+            if st.button("🗑️ Limpar Banco", type="secondary"):
                 limpar_banco()
                 st.rerun()
         else:
-            st.info("Nenhum dado registrado.")
+            st.info("Nenhum dado.")
+    elif senha_digitada:
+        st.sidebar.error("Senha Incorreta")
