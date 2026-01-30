@@ -27,7 +27,6 @@ st.markdown("""
 
 # --- 1. BANCO DE DADOS (SQLite) ---
 def init_db():
-    """Cria a tabela se não existir"""
     conn = sqlite3.connect('dados_fabrica.db', check_same_thread=False)
     c = conn.cursor()
     c.execute('''
@@ -48,7 +47,6 @@ def init_db():
     conn.close()
 
 def salvar_no_banco(dados):
-    """Insere um item no banco"""
     conn = sqlite3.connect('dados_fabrica.db', check_same_thread=False)
     c = conn.cursor()
     c.execute('''
@@ -69,21 +67,18 @@ def salvar_no_banco(dados):
     conn.close()
 
 def ler_banco():
-    """Lê todos os dados para o Admin"""
     conn = sqlite3.connect('dados_fabrica.db', check_same_thread=False)
     df = pd.read_sql_query("SELECT * FROM producao ORDER BY id DESC", conn)
     conn.close()
     return df
 
 def limpar_banco():
-    """Admin zera a produção"""
     conn = sqlite3.connect('dados_fabrica.db', check_same_thread=False)
     c = conn.cursor()
     c.execute("DELETE FROM producao")
     conn.commit()
     conn.close()
 
-# Inicializa o banco ao abrir
 init_db()
 
 # --- 2. FUNÇÕES AUXILIARES ---
@@ -100,7 +95,6 @@ def regra_corte(mm):
 
 @st.cache_data
 def carregar_base_sap():
-    # Tenta carregar do GitHub/Pasta Local
     pasta_script = os.path.dirname(os.path.abspath(__file__))
     caminho_fixo = os.path.join(pasta_script, "base_sap.xlsx")
     
@@ -115,32 +109,29 @@ def carregar_base_sap():
         except: return None
     return None
 
-# --- 3. CONTROLE DE ACESSO (SIDEBAR) ---
+# --- 3. CONTROLE DE ACESSO ---
 st.sidebar.title("🔐 Acesso")
 modo_acesso = st.sidebar.radio("Selecione o Perfil:", ["Operador (Chão de Fábrica)", "Administrador (Escritório)"])
 
-# --- CARREGA BASE SAP ---
+# Carrega Base
 df_sap = carregar_base_sap()
 if df_sap is None:
-    st.error("ERRO: `base_sap.xlsx` não encontrado. Faça upload no GitHub.")
+    st.error("ERRO: `base_sap.xlsx` não encontrado.")
     st.stop()
 
 # ==============================================================================
-# TELA 1: OPERADOR (BIPA E ENVIA)
+# TELA 1: OPERADOR
 # ==============================================================================
 if modo_acesso == "Operador (Chão de Fábrica)":
     st.title("🏭 Operador: Bipagem")
 
-    # Estados do Wizard
     if 'wizard_data' not in st.session_state: st.session_state.wizard_data = {}
     if 'wizard_step' not in st.session_state: st.session_state.wizard_step = 0
 
-    # --- WIZARD MODAL ---
     @st.dialog("📦 Entrada de Material")
     def wizard_item():
         st.write(f"**Item:** {st.session_state.wizard_data.get('Cód. SAP')} - {st.session_state.wizard_data.get('Descrição')}")
         
-        # PASSO 1: RESERVA
         if st.session_state.wizard_step == 1:
             reserva = st.text_input("1. Nº da Reserva:", key="wiz_reserva")
             if st.button("Próximo") or reserva:
@@ -148,7 +139,6 @@ if modo_acesso == "Operador (Chão de Fábrica)":
                 st.session_state.wizard_step = 2
                 st.rerun()
 
-        # PASSO 2: QUANTIDADE
         elif st.session_state.wizard_step == 2:
             qtd = st.number_input("2. Quantidade:", min_value=1, step=1, value=1, key="wiz_qtd")
             if st.button("Próximo"):
@@ -156,7 +146,6 @@ if modo_acesso == "Operador (Chão de Fábrica)":
                 st.session_state.wizard_step = 3
                 st.rerun()
 
-        # PASSO 3: PESO
         elif st.session_state.wizard_step == 3:
             peso = st.number_input("3. Peso (kg):", min_value=0.000, step=0.001, format="%.3f", key="wiz_peso")
             if st.button("Próximo"):
@@ -164,12 +153,9 @@ if modo_acesso == "Operador (Chão de Fábrica)":
                 st.session_state.wizard_step = 4
                 st.rerun()
 
-        # PASSO 4: COMPRIMENTO & SALVAR
         elif st.session_state.wizard_step == 4:
             comp = st.number_input("4. Comprimento (mm):", min_value=0, step=1, key="wiz_comp")
-            
             if st.button("✅ SALVAR E ENVIAR"):
-                # Cálculos Finais Antes de Salvar
                 peso_metro = st.session_state.wizard_data['Peso/m']
                 qtd_f = st.session_state.wizard_data['Qtd']
                 tamanho_f = comp
@@ -179,7 +165,6 @@ if modo_acesso == "Operador (Chão de Fábrica)":
                 peso_teorico = (nova_dimensao / 1000.0) * peso_metro * qtd_f
                 sucata = peso_balanca_f - peso_teorico
                 
-                # Monta objeto final
                 item_final = {
                     "Reserva": st.session_state.wizard_data['Reserva'],
                     "Cód. SAP": st.session_state.wizard_data['Cód. SAP'],
@@ -190,19 +175,13 @@ if modo_acesso == "Operador (Chão de Fábrica)":
                     "Peso Teórico": peso_teorico,
                     "Sucata": sucata
                 }
-                
-                # SALVA NO BANCO DE DADOS
                 salvar_no_banco(item_final)
-                
-                st.toast("Dados enviados para o escritório!", icon="🚀")
-                
-                # Reseta
+                st.toast("Dados enviados!", icon="🚀")
                 st.session_state.wizard_data = {}
                 st.session_state.wizard_step = 0
                 st.session_state.input_scanner = ""
                 st.rerun()
 
-    # --- INPUT SCANNER ---
     def iniciar_bipagem():
         codigo = st.session_state.input_scanner
         if codigo:
@@ -210,7 +189,6 @@ if modo_acesso == "Operador (Chão de Fábrica)":
                 cod_limpo = str(codigo).strip().split(":")[-1]
                 cod_int = int(cod_limpo)
                 produto = df_sap[df_sap['Produto'] == cod_int]
-                
                 if not produto.empty:
                     st.session_state.wizard_data = {
                         "Cód. SAP": cod_int,
@@ -228,19 +206,24 @@ if modo_acesso == "Operador (Chão de Fábrica)":
         wizard_item()
 
     st.text_input("BIPAR CÓDIGO:", key="input_scanner", on_change=iniciar_bipagem)
-    
-    # Feedback visual
-    st.info("ℹ️ Ao finalizar o preenchimento, os dados são enviados automaticamente para a tela do Admin.")
+    st.info("ℹ️ Os dados são salvos automaticamente no banco de dados.")
 
 # ==============================================================================
-# TELA 2: ADMINISTRADOR (VISUALIZA E BAIXA)
+# TELA 2: ADMINISTRADOR
 # ==============================================================================
 elif modo_acesso == "Administrador (Escritório)":
     st.title("💻 Admin: Controle de Produção")
     
-    # Login Simples
-    senha = st.sidebar.text_input("Senha Admin", type="password")
-    if senha == "admin123": # Senha fixa simples
+    # ---------------------------------------------------------
+    # CONFIGURAÇÃO DE SENHA AQUI
+    # ---------------------------------------------------------
+    SENHA_CORRETA = "Br@met4l" 
+    # ---------------------------------------------------------
+
+    senha_digitada = st.sidebar.text_input("Senha Admin", type="password")
+    
+    if senha_digitada == SENHA_CORRETA:
+        st.sidebar.success("Acesso Liberado")
         
         if st.button("🔄 Atualizar Tabela"):
             st.rerun()
@@ -248,18 +231,14 @@ elif modo_acesso == "Administrador (Escritório)":
         df_banco = ler_banco()
         
         if not df_banco.empty:
-            # Métricas
             c1, c2, c3 = st.columns(3)
-            c1.metric("Itens Registrados", len(df_banco))
+            c1.metric("Itens", len(df_banco))
             c2.metric("Peso Total", formatar_br(df_banco['peso_real'].sum()) + " kg")
             c3.metric("Sucata Total", formatar_br(df_banco['sucata'].sum()) + " kg")
             
-            # Mostra Tabela
             st.dataframe(df_banco, use_container_width=True)
             
-            # Exportação
             df_export = df_banco.copy()
-            # Formata colunas para Excel BR
             for col in ['peso_real', 'peso_teorico', 'sucata']:
                 df_export[col] = df_export[col].apply(formatar_br)
                 
@@ -268,14 +247,15 @@ elif modo_acesso == "Administrador (Escritório)":
                 df_export.to_excel(writer, index=False)
                 
             col_d, col_l = st.columns([2,1])
-            col_d.download_button("📥 Baixar Excel Geral", buffer.getvalue(), "Relatorio_Geral.xlsx", type="primary")
+            col_d.download_button("📥 Baixar Excel", buffer.getvalue(), "Relatorio.xlsx", type="primary")
             
-            if col_l.button("🗑️ Limpar Banco de Dados", type="secondary"):
+            if col_l.button("🗑️ Limpar Banco", type="secondary"):
                 limpar_banco()
-                st.success("Banco limpo!")
+                st.success("Limpo!")
                 st.rerun()
         else:
-            st.info("Nenhum dado recebido do operador ainda.")
-            
+            st.info("Nenhum dado recebido.")
+    elif senha_digitada:
+        st.sidebar.error("Senha Incorreta")
     else:
-        st.warning("Digite a senha para acessar os dados (Senha: admin123)")
+        st.info("Digite a senha na barra lateral para acessar.")
