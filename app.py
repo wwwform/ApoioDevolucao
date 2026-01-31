@@ -8,8 +8,17 @@ from datetime import datetime
 # --- CONFIGURAÇÃO ---
 st.set_page_config(page_title="Sistema Integrado Produção", layout="wide")
 
+# CSS BLINDADO (Remove Menu, Rodapé e Ajusta Visual)
 st.markdown("""
 <style>
+    /* Esconde Menu Hamburger (Superior Direito) */
+    #MainMenu {visibility: hidden;}
+    /* Esconde Rodapé 'Made with Streamlit' */
+    footer {visibility: hidden;}
+    /* Esconde Cabeçalho colorido padrão */
+    header {visibility: hidden;}
+    
+    /* Estilos funcionais */
     div[data-testid="stTextInput"] label, div[data-testid="stNumberInput"] label {
         font-size: 1.5rem !important;
         font-weight: bold;
@@ -27,18 +36,19 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- 1. BANCO DE DADOS (AGORA COM TABELA DE SEQUÊNCIA) ---
+# --- 1. BANCO DE DADOS (V5 com Status) ---
 def init_db():
-    conn = sqlite3.connect('dados_fabrica_v4.db', check_same_thread=False)
+    conn = sqlite3.connect('dados_fabrica_v5.db', check_same_thread=False)
     c = conn.cursor()
     
-    # Tabela de Produção (Pode ser limpa)
+    # Tabela Produção
     c.execute('''
         CREATE TABLE IF NOT EXISTS producao (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             data_hora TEXT,
             lote TEXT,
             reserva TEXT,
+            status_reserva TEXT DEFAULT 'Pendente',
             cod_sap INTEGER,
             descricao TEXT,
             qtd INTEGER,
@@ -50,8 +60,7 @@ def init_db():
         )
     ''')
     
-    # Tabela de Sequência (NUNCA É LIMPA PELO ADMIN)
-    # Guarda: cod_sap | ultimo_numero_usado
+    # Tabela Sequência (Lotes)
     c.execute('''
         CREATE TABLE IF NOT EXISTS sequencia_lotes (
             cod_sap INTEGER PRIMARY KEY,
@@ -63,14 +72,9 @@ def init_db():
     conn.close()
 
 def obter_e_incrementar_lote(cod_sap, apenas_visualizar=False):
-    """
-    Se apenas_visualizar=True: Mostra qual seria o próximo (sem gastar o número).
-    Se apenas_visualizar=False: Gera o próximo, GRAVA no banco que foi usado e retorna.
-    """
-    conn = sqlite3.connect('dados_fabrica_v4.db', check_same_thread=False)
+    conn = sqlite3.connect('dados_fabrica_v5.db', check_same_thread=False)
     c = conn.cursor()
     
-    # Verifica qual o último número usado para este material
     c.execute("SELECT ultimo_numero FROM sequencia_lotes WHERE cod_sap = ?", (cod_sap,))
     resultado = c.fetchone()
     
@@ -78,7 +82,6 @@ def obter_e_incrementar_lote(cod_sap, apenas_visualizar=False):
         ultimo = resultado[0]
         proximo = ultimo + 1
     else:
-        # Primeira vez desse material na história
         ultimo = 0
         proximo = 1
     
@@ -86,7 +89,6 @@ def obter_e_incrementar_lote(cod_sap, apenas_visualizar=False):
     lote_formatado = f"{prefixo}{proximo:05d}"
     
     if not apenas_visualizar:
-        # Atualiza ou Insere o novo "Placar"
         c.execute('''
             INSERT INTO sequencia_lotes (cod_sap, ultimo_numero) 
             VALUES (?, ?) 
@@ -98,19 +100,18 @@ def obter_e_incrementar_lote(cod_sap, apenas_visualizar=False):
     return lote_formatado
 
 def salvar_no_banco(dados):
-    # 1. Gera o Lote Oficial (Queima o número na sequência)
     lote_oficial = obter_e_incrementar_lote(dados['Cód. SAP'], apenas_visualizar=False)
     
-    # 2. Salva na Produção
-    conn = sqlite3.connect('dados_fabrica_v4.db', check_same_thread=False)
+    conn = sqlite3.connect('dados_fabrica_v5.db', check_same_thread=False)
     c = conn.cursor()
     c.execute('''
-        INSERT INTO producao (data_hora, lote, reserva, cod_sap, descricao, qtd, peso_real, tamanho_real_mm, tamanho_corte_mm, peso_teorico, sucata)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO producao (data_hora, lote, reserva, status_reserva, cod_sap, descricao, qtd, peso_real, tamanho_real_mm, tamanho_corte_mm, peso_teorico, sucata)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
         lote_oficial,
         dados['Reserva'],
+        "Pendente", # Status inicial padrão
         dados['Cód. SAP'],
         dados['Descrição'],
         dados['Qtd'],
@@ -125,19 +126,27 @@ def salvar_no_banco(dados):
     return lote_oficial
 
 def ler_banco():
-    conn = sqlite3.connect('dados_fabrica_v4.db', check_same_thread=False)
+    conn = sqlite3.connect('dados_fabrica_v5.db', check_same_thread=False)
     df = pd.read_sql_query("SELECT * FROM producao ORDER BY id DESC", conn)
     conn.close()
     return df
 
-def limpar_banco():
-    """
-    Limpa APENAS a tabela de produção (relatório), 
-    mas MANTÉM a tabela de sequência intacta.
-    """
-    conn = sqlite3.connect('dados_fabrica_v4.db', check_same_thread=False)
+def atualizar_status_lote(df_editado):
+    """Atualiza o status com base na edição do Admin"""
+    conn = sqlite3.connect('dados_fabrica_v5.db', check_same_thread=False)
     c = conn.cursor()
-    c.execute("DELETE FROM producao") # Só apaga os registros de produção
+    
+    # Itera sobre as linhas editadas e atualiza no banco
+    for index, row in df_editado.iterrows():
+        c.execute("UPDATE producao SET status_reserva = ? WHERE id = ?", (row['status_reserva'], row['id']))
+        
+    conn.commit()
+    conn.close()
+
+def limpar_banco():
+    conn = sqlite3.connect('dados_fabrica_v5.db', check_same_thread=False)
+    c = conn.cursor()
+    c.execute("DELETE FROM producao")
     conn.commit()
     conn.close()
 
@@ -195,8 +204,6 @@ if modo_acesso == "Operador (Chão de Fábrica)":
     @st.dialog("📦 Entrada de Material")
     def wizard_item():
         st.write(f"**Item:** {st.session_state.wizard_data.get('Cód. SAP')} - {st.session_state.wizard_data.get('Descrição')}")
-        
-        # Mostra qual SERÁ o lote (sem gastar o número ainda)
         st.info(f"🏷️ Próximo Lote Disponível: **{st.session_state.proximo_lote_visual}**")
         st.markdown("---")
         
@@ -244,7 +251,6 @@ if modo_acesso == "Operador (Chão de Fábrica)":
                 
                 if st.form_submit_button("✅ SALVAR E FINALIZAR", use_container_width=True, type="primary"):
                     if comp > 0:
-                        # Processamento
                         peso_metro = st.session_state.wizard_data['Peso/m']
                         qtd_f = st.session_state.wizard_data['Qtd']
                         tamanho_real = comp
@@ -266,10 +272,8 @@ if modo_acesso == "Operador (Chão de Fábrica)":
                             "Sucata": sucata
                         }
                         
-                        # AQUI ACONTECE A MÁGICA: Gera o lote definitivo e salva
                         lote_gerado = salvar_no_banco(item_temp)
-                        
-                        st.toast(f"Salvo! Lote Confirmado: {lote_gerado}", icon="🏷️")
+                        st.toast(f"Salvo! Lote: {lote_gerado}", icon="🏷️")
                         
                         st.session_state.wizard_data = {}
                         st.session_state.wizard_step = 0
@@ -287,8 +291,6 @@ if modo_acesso == "Operador (Chão de Fábrica)":
                 produto = df_sap[df_sap['Produto'] == cod_int]
                 if not produto.empty:
                     st.session_state.item_id += 1 
-                    
-                    # Previsão Visual (Sem consumir o número)
                     prev = obter_e_incrementar_lote(cod_int, apenas_visualizar=True)
                     st.session_state.proximo_lote_visual = prev
                     
@@ -333,17 +335,52 @@ elif modo_acesso == "Administrador (Escritório)":
             c2.metric("Peso Total", formatar_br(df_banco['peso_real'].sum()) + " kg")
             c3.metric("Sucata Total", formatar_br(df_banco['sucata'].sum()) + " kg")
             
-            df_view = df_banco.rename(columns={
-                'lote': 'Lote', 'reserva': 'Reserva', 'cod_sap': 'SAP', 'descricao': 'Descrição',
-                'qtd': 'Qtd', 'tamanho_real_mm': 'Comp. Real', 
-                'tamanho_corte_mm': 'Comp. Corte', 'peso_real': 'Peso',
-                'sucata': 'Sucata'
-            })
-            st.dataframe(df_view[['Lote', 'Reserva', 'SAP', 'Descrição', 'Qtd', 'Peso', 'Comp. Real', 'Comp. Corte', 'Sucata']], use_container_width=True)
+            st.markdown("### Conferência e Status")
+            st.info("💡 Você pode alterar o 'Status Reserva' diretamente na tabela abaixo.")
             
-            df_export = df_banco.copy()
+            # Tabela Editável para o Admin
+            df_editado = st.data_editor(
+                df_banco,
+                use_container_width=True,
+                column_config={
+                    "id": None, # Esconde o ID
+                    "data_hora": st.column_config.TextColumn("Data", disabled=True),
+                    "lote": st.column_config.TextColumn("Lote", disabled=True),
+                    "reserva": st.column_config.TextColumn("Reserva", disabled=True),
+                    "status_reserva": st.column_config.SelectboxColumn(
+                        "Status Reserva",
+                        help="Selecione o status do lançamento",
+                        width="medium",
+                        options=[
+                            "Pendente",
+                            "Ok - Lançada"
+                        ],
+                        required=True
+                    ),
+                    "cod_sap": st.column_config.NumberColumn("SAP", format="%d", disabled=True),
+                    "descricao": st.column_config.TextColumn("Descrição", disabled=True),
+                    "qtd": st.column_config.NumberColumn("Qtd", disabled=True),
+                    "peso_real": st.column_config.NumberColumn("Peso Real", format="%.3f", disabled=True),
+                    "tamanho_real_mm": st.column_config.NumberColumn("Comp. Real", format="%d", disabled=True),
+                    "tamanho_corte_mm": st.column_config.NumberColumn("Comp. Corte", format="%d", disabled=True),
+                    "sucata": st.column_config.NumberColumn("Sucata", format="%.3f", disabled=True),
+                    "peso_teorico": None # Oculta teórico da visão rápida
+                },
+                key="editor_admin"
+            )
+            
+            # Botão para salvar alterações de status
+            if st.button("💾 Salvar Alterações de Status"):
+                # Compara se houve mudança e salva no banco
+                atualizar_status_lote(df_editado)
+                st.success("Status atualizados com sucesso!")
+                st.rerun()
+            
+            # --- EXPORTAÇÃO ---
+            df_export = df_banco.copy() # Pega dados originais do banco (com status atualizado se der rerun)
             df_export.rename(columns={
                 'lote': 'Lote',
+                'status_reserva': 'Status',
                 'tamanho_real_mm': 'Comp. Real (mm)',
                 'tamanho_corte_mm': 'Comp. Considerado (mm)'
             }, inplace=True)
@@ -354,13 +391,11 @@ elif modo_acesso == "Administrador (Escritório)":
             with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                 df_export.to_excel(writer, index=False)
             
-            st.download_button("📥 Baixar Excel Completo", buffer.getvalue(), "Relatorio.xlsx", type="primary", use_container_width=True)
-            
             st.markdown("---")
-            st.caption("Atenção: Limpar o banco abaixo apaga os relatórios, mas NÃO reseta a contagem dos lotes (BRASAxxxxx).")
+            st.download_button("📥 Baixar Excel Completo", buffer.getvalue(), "Relatorio.xlsx", type="primary")
+            
             if st.button("🗑️ Limpar Banco de Relatórios", type="secondary"):
                 limpar_banco()
-                st.success("Relatórios limpos! A sequência de lotes foi preservada.")
                 st.rerun()
         else:
             st.info("Nenhum dado.")
