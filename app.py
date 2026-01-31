@@ -10,29 +10,34 @@ st.set_page_config(page_title="Sistema Integrado Produção", layout="wide")
 
 st.markdown("""
 <style>
-    /* Aumenta o texto dos labels para facilitar leitura no tablet */
     div[data-testid="stTextInput"] label, div[data-testid="stNumberInput"] label {
         font-size: 1.5rem !important;
         font-weight: bold;
         color: #2563eb; 
     }
-    /* Deixa os botões mais altos para facilitar o toque */
     .stButton>button {
         height: 3.5rem;
         font-size: 1.2rem !important;
         font-weight: bold;
     }
+    .stInfo {
+        font-size: 1.2rem;
+        font-weight: bold;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 1. BANCO DE DADOS ---
+# --- 1. BANCO DE DADOS (AGORA COM TABELA DE SEQUÊNCIA) ---
 def init_db():
-    conn = sqlite3.connect('dados_fabrica_v2.db', check_same_thread=False)
+    conn = sqlite3.connect('dados_fabrica_v4.db', check_same_thread=False)
     c = conn.cursor()
+    
+    # Tabela de Produção (Pode ser limpa)
     c.execute('''
         CREATE TABLE IF NOT EXISTS producao (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             data_hora TEXT,
+            lote TEXT,
             reserva TEXT,
             cod_sap INTEGER,
             descricao TEXT,
@@ -44,17 +49,67 @@ def init_db():
             sucata REAL
         )
     ''')
+    
+    # Tabela de Sequência (NUNCA É LIMPA PELO ADMIN)
+    # Guarda: cod_sap | ultimo_numero_usado
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS sequencia_lotes (
+            cod_sap INTEGER PRIMARY KEY,
+            ultimo_numero INTEGER
+        )
+    ''')
+    
     conn.commit()
     conn.close()
 
+def obter_e_incrementar_lote(cod_sap, apenas_visualizar=False):
+    """
+    Se apenas_visualizar=True: Mostra qual seria o próximo (sem gastar o número).
+    Se apenas_visualizar=False: Gera o próximo, GRAVA no banco que foi usado e retorna.
+    """
+    conn = sqlite3.connect('dados_fabrica_v4.db', check_same_thread=False)
+    c = conn.cursor()
+    
+    # Verifica qual o último número usado para este material
+    c.execute("SELECT ultimo_numero FROM sequencia_lotes WHERE cod_sap = ?", (cod_sap,))
+    resultado = c.fetchone()
+    
+    if resultado:
+        ultimo = resultado[0]
+        proximo = ultimo + 1
+    else:
+        # Primeira vez desse material na história
+        ultimo = 0
+        proximo = 1
+    
+    prefixo = "BRASA"
+    lote_formatado = f"{prefixo}{proximo:05d}"
+    
+    if not apenas_visualizar:
+        # Atualiza ou Insere o novo "Placar"
+        c.execute('''
+            INSERT INTO sequencia_lotes (cod_sap, ultimo_numero) 
+            VALUES (?, ?) 
+            ON CONFLICT(cod_sap) DO UPDATE SET ultimo_numero = ?
+        ''', (cod_sap, proximo, proximo))
+        conn.commit()
+    
+    conn.close()
+    return lote_formatado
+
 def salvar_no_banco(dados):
-    conn = sqlite3.connect('dados_fabrica_v2.db', check_same_thread=False)
+    # 1. Gera o Lote Oficial (Queima o número na sequência)
+    lote_oficial = obter_e_incrementar_lote(dados['Cód. SAP'], apenas_visualizar=False)
+    
+    # 2. Salva na Produção
+    conn = sqlite3.connect('dados_fabrica_v4.db', check_same_thread=False)
     c = conn.cursor()
     c.execute('''
-        INSERT INTO producao (data_hora, reserva, cod_sap, descricao, qtd, peso_real, tamanho_real_mm, tamanho_corte_mm, peso_teorico, sucata)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO producao (data_hora, lote, reserva, cod_sap, descricao, qtd, peso_real, tamanho_real_mm, tamanho_corte_mm, peso_teorico, sucata)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (
         datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
+        lote_oficial,
         dados['Reserva'],
         dados['Cód. SAP'],
         dados['Descrição'],
@@ -67,17 +122,22 @@ def salvar_no_banco(dados):
     ))
     conn.commit()
     conn.close()
+    return lote_oficial
 
 def ler_banco():
-    conn = sqlite3.connect('dados_fabrica_v2.db', check_same_thread=False)
+    conn = sqlite3.connect('dados_fabrica_v4.db', check_same_thread=False)
     df = pd.read_sql_query("SELECT * FROM producao ORDER BY id DESC", conn)
     conn.close()
     return df
 
 def limpar_banco():
-    conn = sqlite3.connect('dados_fabrica_v2.db', check_same_thread=False)
+    """
+    Limpa APENAS a tabela de produção (relatório), 
+    mas MANTÉM a tabela de sequência intacta.
+    """
+    conn = sqlite3.connect('dados_fabrica_v4.db', check_same_thread=False)
     c = conn.cursor()
-    c.execute("DELETE FROM producao")
+    c.execute("DELETE FROM producao") # Só apaga os registros de produção
     conn.commit()
     conn.close()
 
@@ -122,30 +182,36 @@ if df_sap is None:
     st.stop()
 
 # ==============================================================================
-# TELA 1: OPERADOR
+# TELA 1: OPERADOR (Tablet)
 # ==============================================================================
 if modo_acesso == "Operador (Chão de Fábrica)":
     st.title("🏭 Operador: Bipagem")
 
-    # Estados
     if 'wizard_data' not in st.session_state: st.session_state.wizard_data = {}
     if 'wizard_step' not in st.session_state: st.session_state.wizard_step = 0
     if 'item_id' not in st.session_state: st.session_state.item_id = 0 
+    if 'proximo_lote_visual' not in st.session_state: st.session_state.proximo_lote_visual = ""
 
     @st.dialog("📦 Entrada de Material")
     def wizard_item():
         st.write(f"**Item:** {st.session_state.wizard_data.get('Cód. SAP')} - {st.session_state.wizard_data.get('Descrição')}")
         
+        # Mostra qual SERÁ o lote (sem gastar o número ainda)
+        st.info(f"🏷️ Próximo Lote Disponível: **{st.session_state.proximo_lote_visual}**")
+        st.markdown("---")
+        
         # --- PASSO 1: RESERVA ---
         if st.session_state.wizard_step == 1:
             with st.form("form_reserva"):
                 reserva = st.text_input("1. Nº da Reserva:", key=f"res_{st.session_state.item_id}")
-                st.write("") # Espaço
-                # Botão Full Width para facilitar o toque
+                st.write("")
                 if st.form_submit_button("PRÓXIMO >>", use_container_width=True, type="primary"):
-                    st.session_state.wizard_data['Reserva'] = reserva
-                    st.session_state.wizard_step = 2
-                    st.rerun()
+                    if reserva.strip():
+                        st.session_state.wizard_data['Reserva'] = reserva
+                        st.session_state.wizard_step = 2
+                        st.rerun()
+                    else:
+                        st.error("⚠️ Digite a Reserva!")
 
         # --- PASSO 2: QUANTIDADE ---
         elif st.session_state.wizard_step == 2:
@@ -163,9 +229,12 @@ if modo_acesso == "Operador (Chão de Fábrica)":
                 peso = st.number_input("3. Peso Real (kg):", min_value=0.000, step=0.001, format="%.3f", key=f"peso_{st.session_state.item_id}")
                 st.write("")
                 if st.form_submit_button("PRÓXIMO >>", use_container_width=True, type="primary"):
-                    st.session_state.wizard_data['Peso Balança (kg)'] = peso
-                    st.session_state.wizard_step = 4
-                    st.rerun()
+                    if peso > 0:
+                        st.session_state.wizard_data['Peso Balança (kg)'] = peso
+                        st.session_state.wizard_step = 4
+                        st.rerun()
+                    else:
+                        st.error("⚠️ Peso não pode ser Zero!")
 
         # --- PASSO 4: COMPRIMENTO ---
         elif st.session_state.wizard_step == 4:
@@ -173,37 +242,41 @@ if modo_acesso == "Operador (Chão de Fábrica)":
                 comp = st.number_input("4. Comprimento Real (mm):", min_value=0, step=1, key=f"comp_{st.session_state.item_id}")
                 st.write("")
                 
-                # Botão Final Verde
                 if st.form_submit_button("✅ SALVAR E FINALIZAR", use_container_width=True, type="primary"):
-                    # Processamento
-                    peso_metro = st.session_state.wizard_data['Peso/m']
-                    qtd_f = st.session_state.wizard_data['Qtd']
-                    tamanho_real = comp
-                    peso_balanca_f = st.session_state.wizard_data['Peso Balança (kg)']
-                    
-                    tamanho_corte = regra_corte(tamanho_real)
-                    peso_teorico = (tamanho_corte / 1000.0) * peso_metro * qtd_f
-                    sucata = peso_balanca_f - peso_teorico
-                    
-                    item_final = {
-                        "Reserva": st.session_state.wizard_data['Reserva'],
-                        "Cód. SAP": st.session_state.wizard_data['Cód. SAP'],
-                        "Descrição": st.session_state.wizard_data['Descrição'],
-                        "Qtd": qtd_f,
-                        "Peso Balança (kg)": peso_balanca_f,
-                        "Tamanho Real (mm)": tamanho_real,
-                        "Tamanho Corte (mm)": tamanho_corte,
-                        "Peso Teórico": peso_teorico,
-                        "Sucata": sucata
-                    }
-                    salvar_no_banco(item_final)
-                    st.toast(f"Item salvo!", icon="💾")
-                    
-                    # Reseta
-                    st.session_state.wizard_data = {}
-                    st.session_state.wizard_step = 0
-                    st.session_state.input_scanner = ""
-                    st.rerun()
+                    if comp > 0:
+                        # Processamento
+                        peso_metro = st.session_state.wizard_data['Peso/m']
+                        qtd_f = st.session_state.wizard_data['Qtd']
+                        tamanho_real = comp
+                        peso_balanca_f = st.session_state.wizard_data['Peso Balança (kg)']
+                        
+                        tamanho_corte = regra_corte(tamanho_real)
+                        peso_teorico = (tamanho_corte / 1000.0) * peso_metro * qtd_f
+                        sucata = peso_balanca_f - peso_teorico
+                        
+                        item_temp = {
+                            "Reserva": st.session_state.wizard_data['Reserva'],
+                            "Cód. SAP": st.session_state.wizard_data['Cód. SAP'],
+                            "Descrição": st.session_state.wizard_data['Descrição'],
+                            "Qtd": qtd_f,
+                            "Peso Balança (kg)": peso_balanca_f,
+                            "Tamanho Real (mm)": tamanho_real,
+                            "Tamanho Corte (mm)": tamanho_corte,
+                            "Peso Teórico": peso_teorico,
+                            "Sucata": sucata
+                        }
+                        
+                        # AQUI ACONTECE A MÁGICA: Gera o lote definitivo e salva
+                        lote_gerado = salvar_no_banco(item_temp)
+                        
+                        st.toast(f"Salvo! Lote Confirmado: {lote_gerado}", icon="🏷️")
+                        
+                        st.session_state.wizard_data = {}
+                        st.session_state.wizard_step = 0
+                        st.session_state.input_scanner = ""
+                        st.rerun()
+                    else:
+                        st.error("⚠️ Comprimento não pode ser Zero!")
 
     def iniciar_bipagem():
         codigo = st.session_state.input_scanner
@@ -213,7 +286,12 @@ if modo_acesso == "Operador (Chão de Fábrica)":
                 cod_int = int(cod_limpo)
                 produto = df_sap[df_sap['Produto'] == cod_int]
                 if not produto.empty:
-                    st.session_state.item_id += 1 # Novo ID para limpar formulários
+                    st.session_state.item_id += 1 
+                    
+                    # Previsão Visual (Sem consumir o número)
+                    prev = obter_e_incrementar_lote(cod_int, apenas_visualizar=True)
+                    st.session_state.proximo_lote_visual = prev
+                    
                     st.session_state.wizard_data = {
                         "Cód. SAP": cod_int,
                         "Descrição": produto.iloc[0]['Descrição do produto'],
@@ -230,7 +308,7 @@ if modo_acesso == "Operador (Chão de Fábrica)":
         wizard_item()
 
     st.text_input("BIPAR CÓDIGO:", key="input_scanner", on_change=iniciar_bipagem)
-    st.info("ℹ️ Sistema pronto para uso em Tablet.")
+    st.info("ℹ️ Sistema com contador de lote sequencial e indestrutível.")
 
 # ==============================================================================
 # TELA 2: ADMINISTRADOR
@@ -255,18 +333,20 @@ elif modo_acesso == "Administrador (Escritório)":
             c2.metric("Peso Total", formatar_br(df_banco['peso_real'].sum()) + " kg")
             c3.metric("Sucata Total", formatar_br(df_banco['sucata'].sum()) + " kg")
             
-            # Tabela
             df_view = df_banco.rename(columns={
-                'reserva': 'Reserva', 'cod_sap': 'SAP', 'descricao': 'Descrição',
+                'lote': 'Lote', 'reserva': 'Reserva', 'cod_sap': 'SAP', 'descricao': 'Descrição',
                 'qtd': 'Qtd', 'tamanho_real_mm': 'Comp. Real', 
                 'tamanho_corte_mm': 'Comp. Corte', 'peso_real': 'Peso',
                 'sucata': 'Sucata'
             })
-            st.dataframe(df_view[['Reserva', 'SAP', 'Descrição', 'Qtd', 'Peso', 'Comp. Real', 'Comp. Corte', 'Sucata']], use_container_width=True)
+            st.dataframe(df_view[['Lote', 'Reserva', 'SAP', 'Descrição', 'Qtd', 'Peso', 'Comp. Real', 'Comp. Corte', 'Sucata']], use_container_width=True)
             
-            # Excel
             df_export = df_banco.copy()
-            df_export.rename(columns={'tamanho_real_mm': 'Comp. Real (mm)', 'tamanho_corte_mm': 'Comp. Considerado (mm)'}, inplace=True)
+            df_export.rename(columns={
+                'lote': 'Lote',
+                'tamanho_real_mm': 'Comp. Real (mm)',
+                'tamanho_corte_mm': 'Comp. Considerado (mm)'
+            }, inplace=True)
             for col in ['peso_real', 'peso_teorico', 'sucata']:
                 df_export[col] = df_export[col].apply(formatar_br)
                 
@@ -276,8 +356,11 @@ elif modo_acesso == "Administrador (Escritório)":
             
             st.download_button("📥 Baixar Excel Completo", buffer.getvalue(), "Relatorio.xlsx", type="primary", use_container_width=True)
             
-            if st.button("🗑️ Limpar Banco", type="secondary"):
+            st.markdown("---")
+            st.caption("Atenção: Limpar o banco abaixo apaga os relatórios, mas NÃO reseta a contagem dos lotes (BRASAxxxxx).")
+            if st.button("🗑️ Limpar Banco de Relatórios", type="secondary"):
                 limpar_banco()
+                st.success("Relatórios limpos! A sequência de lotes foi preservada.")
                 st.rerun()
         else:
             st.info("Nenhum dado.")
