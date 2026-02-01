@@ -1,35 +1,23 @@
 import streamlit as st
 import pandas as pd
-import io
-import os
-import sqlite3
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
+import time
 
 # --- CONFIGURAÇÃO ---
 st.set_page_config(page_title="Sistema Integrado Produção", layout="wide")
 
-# CSS BLINDADO (MODO KIOSK REAL)
+# --- CSS NUCLEAR ---
 st.markdown("""
 <style>
-    /* Esconde o menu hambúrguer (3 pontinhos no topo direito) */
+    header[data-testid="stHeader"] {visibility: hidden; display: none;}
     #MainMenu {visibility: hidden;}
-    
-    /* Esconde o rodapé 'Made with Streamlit' */
     footer {visibility: hidden;}
-    
-    /* Esconde o cabeçalho colorido padrão */
-    header {visibility: hidden;}
-    
-    /* Esconde a barra de ferramentas do desenvolvedor (onde fica o Reboot/Manage App) */
-    [data-testid="stToolbar"] {visibility: hidden !important; display: none !important;}
-    
-    /* Esconde a decoração colorida no topo */
-    [data-testid="stDecoration"] {visibility: hidden !important; display: none !important;}
-    
-    /* Esconde botão de Deploy se ele tentar aparecer */
+    [data-testid="stToolbar"] {visibility: hidden; display: none;}
+    [data-testid="stDecoration"] {visibility: hidden; display: none;}
     .stDeployButton {display:none;}
     
-    /* Ajuste de fontes para os inputs */
     div[data-testid="stTextInput"] label, div[data-testid="stNumberInput"] label {
         font-size: 1.5rem !important;
         font-weight: bold;
@@ -44,111 +32,159 @@ st.markdown("""
         font-size: 1.2rem;
         font-weight: bold;
     }
+    .block-container {
+        padding-top: 1rem !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 1. BANCO DE DADOS ---
-def init_db():
-    conn = sqlite3.connect('dados_fabrica_v5.db', check_same_thread=False)
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS producao (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            data_hora TEXT,
-            lote TEXT,
-            reserva TEXT,
-            status_reserva TEXT DEFAULT 'Pendente',
-            cod_sap INTEGER,
-            descricao TEXT,
-            qtd INTEGER,
-            peso_real REAL,
-            tamanho_real_mm INTEGER,
-            tamanho_corte_mm INTEGER,
-            peso_teorico REAL,
-            sucata REAL
-        )
-    ''')
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS sequencia_lotes (
-            cod_sap INTEGER PRIMARY KEY,
-            ultimo_numero INTEGER
-        )
-    ''')
-    conn.commit()
-    conn.close()
+# --- CONEXÃO GOOGLE SHEETS ---
+@st.cache_resource
+def conectar_google():
+    scope = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(st.secrets["gcp_service_account"], scope)
+    client = gspread.authorize(creds)
+    return client.open("BD_Fabrica_Geral")
 
-def obter_e_incrementar_lote(cod_sap, apenas_visualizar=False):
-    conn = sqlite3.connect('dados_fabrica_v5.db', check_same_thread=False)
-    c = conn.cursor()
-    c.execute("SELECT ultimo_numero FROM sequencia_lotes WHERE cod_sap = ?", (cod_sap,))
-    resultado = c.fetchone()
-    if resultado:
-        ultimo = resultado[0]
+def garantir_cabecalhos():
+    try:
+        sh = conectar_google()
+        # Aba Produção
+        ws_prod = sh.worksheet("Perfis_Producao")
+        if not ws_prod.row_values(1):
+            ws_prod.append_row([
+                "id", "data_hora", "lote", "reserva", "status_reserva", 
+                "cod_sap", "descricao", "qtd", "peso_real", 
+                "tamanho_real_mm", "tamanho_corte_mm", "peso_teorico", "sucata"
+            ])
+        # Aba Lotes
+        ws_lotes = sh.worksheet("Perfis_Lotes")
+        if not ws_lotes.row_values(1):
+            ws_lotes.append_row(["cod_sap", "ultimo_numero"])
+    except Exception as e:
+        st.error(f"Erro ao iniciar planilha: {e}")
+
+# Garante cabeçalhos ao iniciar
+garantir_cabecalhos()
+
+# --- FUNÇÕES DE BANCO (ADAPTADAS PARA GOOGLE) ---
+def ler_banco():
+    sh = conectar_google()
+    ws = sh.worksheet("Perfis_Producao")
+    dados = ws.get_all_records()
+    df = pd.DataFrame(dados)
+    # Garante que colunas numéricas sejam números
+    cols_num = ['id', 'cod_sap', 'qtd', 'peso_real', 'tamanho_real_mm', 'tamanho_corte_mm', 'peso_teorico', 'sucata']
+    for c in cols_num:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
+    return df.sort_values(by='id', ascending=False)
+
+def obter_e_incrementar_lote(cod_sap):
+    sh = conectar_google()
+    ws = sh.worksheet("Perfis_Lotes")
+    
+    # Procura o SAP
+    cell = ws.find(str(cod_sap))
+    
+    if cell:
+        # Se achou, pega o valor da coluna ao lado (coluna B)
+        ultimo = int(ws.cell(cell.row, 2).value)
         proximo = ultimo + 1
+        ws.update_cell(cell.row, 2, proximo)
     else:
-        ultimo = 0
+        # Se não achou, cria novo
         proximo = 1
+        ws.append_row([cod_sap, proximo])
+        
     prefixo = "BRASA"
-    lote_formatado = f"{prefixo}{proximo:05d}"
-    if not apenas_visualizar:
-        c.execute('''
-            INSERT INTO sequencia_lotes (cod_sap, ultimo_numero) 
-            VALUES (?, ?) 
-            ON CONFLICT(cod_sap) DO UPDATE SET ultimo_numero = ?
-        ''', (cod_sap, proximo, proximo))
-        conn.commit()
-    conn.close()
-    return lote_formatado
+    return f"{prefixo}{proximo:05d}"
 
 def salvar_no_banco(dados):
-    lote_oficial = obter_e_incrementar_lote(dados['Cód. SAP'], apenas_visualizar=False)
-    conn = sqlite3.connect('dados_fabrica_v5.db', check_same_thread=False)
-    c = conn.cursor()
-    c.execute('''
-        INSERT INTO producao (data_hora, lote, reserva, status_reserva, cod_sap, descricao, qtd, peso_real, tamanho_real_mm, tamanho_corte_mm, peso_teorico, sucata)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (
+    sh = conectar_google()
+    ws = sh.worksheet("Perfis_Producao")
+    
+    lote_oficial = obter_e_incrementar_lote(dados['Cód. SAP'])
+    
+    # Gera ID único baseado no tempo (timestamp)
+    novo_id = int(datetime.now().timestamp() * 1000)
+    
+    linha = [
+        novo_id,
         datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
         lote_oficial,
         dados['Reserva'],
         "Pendente",
-        dados['Cód. SAP'],
+        int(dados['Cód. SAP']),
         dados['Descrição'],
-        dados['Qtd'],
-        dados['Peso Balança (kg)'],
-        dados['Tamanho Real (mm)'],
-        dados['Tamanho Corte (mm)'],
-        dados['Peso Teórico'],
-        dados['Sucata']
-    ))
-    conn.commit()
-    conn.close()
+        int(dados['Qtd']),
+        float(dados['Peso Balança (kg)']),
+        int(dados['Tamanho Real (mm)']),
+        int(dados['Tamanho Corte (mm)']),
+        float(dados['Peso Teórico']),
+        float(dados['Sucata'])
+    ]
+    
+    ws.append_row(linha)
     return lote_oficial
 
-def ler_banco():
-    conn = sqlite3.connect('dados_fabrica_v5.db', check_same_thread=False)
-    df = pd.read_sql_query("SELECT * FROM producao ORDER BY id DESC", conn)
-    conn.close()
-    return df
-
 def atualizar_status_lote(df_editado):
-    conn = sqlite3.connect('dados_fabrica_v5.db', check_same_thread=False)
-    c = conn.cursor()
-    for index, row in df_editado.iterrows():
-        c.execute("UPDATE producao SET status_reserva = ? WHERE id = ?", (row['status_reserva'], row['id']))
-    conn.commit()
-    conn.close()
+    sh = conectar_google()
+    ws = sh.worksheet("Perfis_Producao")
+    
+    # GSheets é lento para atualizar um por um. 
+    # Estratégia: O usuário editou o Status no Streamlit.
+    # Vamos achar a linha pelo ID e atualizar o Status.
+    
+    # Pega todos os dados atuais da planilha para comparar (ou só atualiza o que mudou)
+    # Para simplificar e não estourar cota: Atualiza apenas os que mudaram seria ideal, 
+    # mas aqui vamos fazer loop simples.
+    
+    registros_sheet = ws.get_all_records()
+    
+    for i, row_sheet in enumerate(registros_sheet):
+        id_sheet = row_sheet['id']
+        # Acha esse ID no DF editado
+        row_editada = df_editado[df_editado['id'] == id_sheet]
+        
+        if not row_editada.empty:
+            novo_status = row_editada.iloc[0]['status_reserva']
+            # Se mudou, atualiza na planilha
+            if row_sheet['status_reserva'] != novo_status:
+                # +2 porque row_sheet começa do 0 e tem cabeçalho (linha 1)
+                ws.update_cell(i + 2, 5, novo_status) # 5 é a coluna status_reserva
 
-def limpar_banco():
-    conn = sqlite3.connect('dados_fabrica_v5.db', check_same_thread=False)
-    c = conn.cursor()
-    c.execute("DELETE FROM producao")
-    conn.commit()
-    conn.close()
+def limpar_banco_completo():
+    sh = conectar_google()
+    # Limpa Produção
+    ws_p = sh.worksheet("Perfis_Producao")
+    ws_p.clear()
+    ws_p.append_row(["id", "data_hora", "lote", "reserva", "status_reserva", "cod_sap", "descricao", "qtd", "peso_real", "tamanho_real_mm", "tamanho_corte_mm", "peso_teorico", "sucata"])
+    
+    # Limpa Lotes
+    ws_l = sh.worksheet("Perfis_Lotes")
+    ws_l.clear()
+    ws_l.append_row(["cod_sap", "ultimo_numero"])
 
-init_db()
+def excluir_linha_por_id(id_alvo):
+    sh = conectar_google()
+    ws = sh.worksheet("Perfis_Producao")
+    cell = ws.find(str(id_alvo))
+    if cell:
+        ws.delete_rows(cell.row)
+        return True
+    return False
 
-# --- 2. FUNÇÕES AUXILIARES ---
+def ajustar_contador_lote(cod_sap, novo_valor):
+    sh = conectar_google()
+    ws = sh.worksheet("Perfis_Lotes")
+    cell = ws.find(str(cod_sap))
+    if cell:
+        ws.update_cell(cell.row, 2, novo_valor)
+    else:
+        ws.append_row([cod_sap, novo_valor])
+
+# --- FUNÇÕES AUXILIARES ---
 def formatar_br(valor):
     try:
         if pd.isna(valor) or valor == "": return "0,000"
@@ -178,14 +214,12 @@ def carregar_base_sap():
         return df
     except: return None
 
-# --- 3. CONTROLE DE ACESSO ---
+# --- CONTROLE DE ACESSO ---
 st.sidebar.title("🔐 Acesso Restrito")
-modo_acesso = st.sidebar.radio("Selecione o Perfil:", 
-    ["Operador (Chão de Fábrica)", "Administrador (Escritório)", "Super Admin"])
+modo_acesso = st.sidebar.radio("Selecione o Perfil:", ["Operador (Chão de Fábrica)", "Administrador (Escritório)", "Super Admin"])
 
 df_sap = carregar_base_sap()
-if df_sap is None:
-    st.error("ERRO: `base_sap.xlsx` não encontrado.")
+if df_sap is None: st.error("ERRO: `base_sap.xlsx` não encontrado.")
 
 # ==============================================================================
 # TELA 1: OPERADOR
@@ -196,12 +230,13 @@ if modo_acesso == "Operador (Chão de Fábrica)":
         if 'wizard_data' not in st.session_state: st.session_state.wizard_data = {}
         if 'wizard_step' not in st.session_state: st.session_state.wizard_step = 0
         if 'item_id' not in st.session_state: st.session_state.item_id = 0 
-        if 'proximo_lote_visual' not in st.session_state: st.session_state.proximo_lote_visual = ""
+        
+        # Como o lote é online, não mostramos o "próximo" antes de bipar para evitar delay
+        # Mas podemos mostrar o último gerado se quisermos. Por hora, simplificado.
 
         @st.dialog("📦 Entrada de Material")
         def wizard_item():
             st.write(f"**Item:** {st.session_state.wizard_data.get('Cód. SAP')} - {st.session_state.wizard_data.get('Descrição')}")
-            st.info(f"🏷️ Próximo Lote Disponível: **{st.session_state.proximo_lote_visual}**")
             st.markdown("---")
             if st.session_state.wizard_step == 1:
                 with st.form("form_reserva"):
@@ -237,30 +272,32 @@ if modo_acesso == "Operador (Chão de Fábrica)":
                     st.write("")
                     if st.form_submit_button("✅ SALVAR E FINALIZAR", use_container_width=True, type="primary"):
                         if comp > 0:
-                            peso_metro = st.session_state.wizard_data['Peso/m']
-                            qtd_f = st.session_state.wizard_data['Qtd']
-                            tamanho_real = comp
-                            peso_balanca_f = st.session_state.wizard_data['Peso Balança (kg)']
-                            tamanho_corte = regra_corte(tamanho_real)
-                            peso_teorico = (tamanho_corte / 1000.0) * peso_metro * qtd_f
-                            sucata = peso_balanca_f - peso_teorico
-                            item_temp = {
-                                "Reserva": st.session_state.wizard_data['Reserva'],
-                                "Cód. SAP": st.session_state.wizard_data['Cód. SAP'],
-                                "Descrição": st.session_state.wizard_data['Descrição'],
-                                "Qtd": qtd_f,
-                                "Peso Balança (kg)": peso_balanca_f,
-                                "Tamanho Real (mm)": tamanho_real,
-                                "Tamanho Corte (mm)": tamanho_corte,
-                                "Peso Teórico": peso_teorico,
-                                "Sucata": sucata
-                            }
-                            lote_gerado = salvar_no_banco(item_temp)
-                            st.toast(f"Salvo! Lote: {lote_gerado}", icon="🏷️")
-                            st.session_state.wizard_data = {}
-                            st.session_state.wizard_step = 0
-                            st.session_state.input_scanner = ""
-                            st.rerun()
+                            with st.spinner("Salvando na nuvem..."):
+                                peso_metro = st.session_state.wizard_data['Peso/m']
+                                qtd_f = st.session_state.wizard_data['Qtd']
+                                tamanho_real = comp
+                                peso_balanca_f = st.session_state.wizard_data['Peso Balança (kg)']
+                                tamanho_corte = regra_corte(tamanho_real)
+                                peso_teorico = (tamanho_corte / 1000.0) * peso_metro * qtd_f
+                                sucata = peso_balanca_f - peso_teorico
+                                item_temp = {
+                                    "Reserva": st.session_state.wizard_data['Reserva'],
+                                    "Cód. SAP": st.session_state.wizard_data['Cód. SAP'],
+                                    "Descrição": st.session_state.wizard_data['Descrição'],
+                                    "Qtd": qtd_f,
+                                    "Peso Balança (kg)": peso_balanca_f,
+                                    "Tamanho Real (mm)": tamanho_real,
+                                    "Tamanho Corte (mm)": tamanho_corte,
+                                    "Peso Teórico": peso_teorico,
+                                    "Sucata": sucata
+                                }
+                                lote_gerado = salvar_no_banco(item_temp)
+                                st.toast(f"Salvo! Lote: {lote_gerado}", icon="🏷️")
+                                st.session_state.wizard_data = {}
+                                st.session_state.wizard_step = 0
+                                st.session_state.input_scanner = ""
+                                time.sleep(1) # Tempo para ver o toast
+                                st.rerun()
                         else: st.error("⚠️ Comprimento não pode ser Zero!")
 
         def iniciar_bipagem():
@@ -272,8 +309,6 @@ if modo_acesso == "Operador (Chão de Fábrica)":
                     produto = df_sap[df_sap['Produto'] == cod_int]
                     if not produto.empty:
                         st.session_state.item_id += 1 
-                        prev = obter_e_incrementar_lote(cod_int, apenas_visualizar=True)
-                        st.session_state.proximo_lote_visual = prev
                         st.session_state.wizard_data = {
                             "Cód. SAP": cod_int,
                             "Descrição": produto.iloc[0]['Descrição do produto'],
@@ -287,41 +322,41 @@ if modo_acesso == "Operador (Chão de Fábrica)":
 
         if st.session_state.wizard_step > 0: wizard_item()
         st.text_input("BIPAR CÓDIGO:", key="input_scanner", on_change=iniciar_bipagem)
-        # REMOVIDA A MENSAGEM DO OPERADOR
 
 # ==============================================================================
 # TELA 2: ADMINISTRADOR
 # ==============================================================================
 elif modo_acesso == "Administrador (Escritório)":
-    st.title("💻 Admin: Controle de Produção")
+    st.title("💻 Admin: Controle de Produção (Google Cloud)")
     SENHA_CORRETA = "Br@met4l"
     senha_digitada = st.sidebar.text_input("Senha Admin", type="password")
     
     if senha_digitada == SENHA_CORRETA:
         st.sidebar.success("Conectado")
         
-        # LER O BANCO
-        df_banco = ler_banco()
+        # Carrega dados do GSheets
+        try:
+            df_banco = ler_banco()
+        except:
+            st.error("Erro ao conectar no Google Sheets. Verifique a internet ou credenciais.")
+            df_banco = pd.DataFrame()
         
         if not df_banco.empty:
-            # --- CRIAÇÃO DAS ABAS (Tabela e Dashboard) ---
             tab1, tab2 = st.tabs(["📋 Tabela & Edição", "📊 Dashboard KPIs"])
             
-            # --- ABA 1: TABELA ---
             with tab1:
-                if st.button("🔄 Atualizar Tabela"): st.rerun()
-                
+                if st.button("🔄 Atualizar Tabela (Nuvem)"): st.rerun()
                 c1, c2, c3 = st.columns(3)
                 c1.metric("Itens", len(df_banco))
                 c2.metric("Peso Total", formatar_br(df_banco['peso_real'].sum()) + " kg")
                 c3.metric("Sucata Total", formatar_br(df_banco['sucata'].sum()) + " kg")
                 
-                st.markdown("### Conferência e Status")
+                st.markdown("### Conferência")
                 df_editado = st.data_editor(
                     df_banco,
                     use_container_width=True,
                     column_config={
-                        "id": None, 
+                        "id": st.column_config.NumberColumn("ID", disabled=True),
                         "data_hora": st.column_config.TextColumn("Data", disabled=True),
                         "lote": st.column_config.TextColumn("Lote", disabled=True),
                         "reserva": st.column_config.TextColumn("Reserva", disabled=True),
@@ -337,12 +372,13 @@ elif modo_acesso == "Administrador (Escritório)":
                     },
                     key="editor_admin"
                 )
-                if st.button("💾 Salvar Alterações de Status"):
-                    atualizar_status_lote(df_editado)
-                    st.success("Status atualizados com sucesso!")
+                if st.button("💾 Salvar Status na Nuvem"):
+                    with st.spinner("Atualizando planilha..."):
+                        atualizar_status_lote(df_editado)
+                    st.success("Salvo com sucesso!")
                     st.rerun()
                 
-                # --- EXPORTAÇÃO EXCEL ---
+                # Exportação Excel
                 lista_exportacao = []
                 for index, row in df_banco.iterrows():
                     linha_original = {
@@ -372,121 +408,83 @@ elif modo_acesso == "Administrador (Escritório)":
                         lista_exportacao.append(linha_virtual)
 
                 df_export_final = pd.DataFrame(lista_exportacao)
-                cols_order = ['Lote', 'Reserva', 'SAP', 'Descrição', 'Peso Lançamento (kg)', 'Status', 'Qtd', 'Comp. Real (mm)', 'Comp. Corte (mm)']
-                cols_final = [c for c in cols_order if c in df_export_final.columns]
-                df_export_final = df_export_final[cols_final]
-                buffer = io.BytesIO()
-                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                    df_export_final.to_excel(writer, index=False)
-                
-                st.markdown("---")
-                st.download_button("📥 Baixar Excel", buffer.getvalue(), "Relatorio_Lancamento.xlsx", type="primary")
-                if st.button("🗑️ Limpar Banco de Relatórios", type="secondary"):
-                    limpar_banco()
-                    st.rerun()
-
-            # --- ABA 2: DASHBOARD (NOVA!) ---
+                if not df_export_final.empty:
+                    cols_order = ['Lote', 'Reserva', 'SAP', 'Descrição', 'Peso Lançamento (kg)', 'Status', 'Qtd', 'Comp. Real (mm)', 'Comp. Corte (mm)']
+                    cols_final = [c for c in cols_order if c in df_export_final.columns]
+                    df_export_final = df_export_final[cols_final]
+                    buffer = io.BytesIO()
+                    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                        df_export_final.to_excel(writer, index=False)
+                    st.markdown("---")
+                    st.download_button("📥 Baixar Excel", buffer.getvalue(), "Relatorio_Lancamento.xlsx", type="primary")
+            
             with tab2:
                 st.subheader("📊 Indicadores de Performance (KPIs)")
-                
-                # Cálculos
                 peso_total = df_banco['peso_real'].sum()
                 sucata_total = df_banco['sucata'].sum()
-                # Evita divisão por zero
-                if peso_total > 0:
-                    pct_sucata = (sucata_total / peso_total) * 100
-                else:
-                    pct_sucata = 0
-                
-                # Exibição dos KPIs
+                if peso_total > 0: pct_sucata = (sucata_total / peso_total) * 100
+                else: pct_sucata = 0
                 kpi1, kpi2, kpi3 = st.columns(3)
                 kpi1.metric("Produção Total", f"{peso_total:,.2f} kg".replace(",", "X").replace(".", ",").replace("X", "."))
                 kpi2.metric("Total de Sucata", f"{sucata_total:,.2f} kg".replace(",", "X").replace(".", ",").replace("X", "."), delta_color="inverse")
                 kpi3.metric("Índice de Sucata %", f"{pct_sucata:.2f}%", delta=f"{pct_sucata:.2f}%", delta_color="inverse")
-                
                 st.markdown("---")
-                st.write("### 🏆 Top Materiais Produzidos (por Peso)")
-                
-                # Gráfico de Barras por Descrição
+                st.write("### 🏆 Top Materiais Produzidos")
                 df_chart = df_banco.groupby("descricao")[["peso_real"]].sum().sort_values("peso_real", ascending=False).head(10)
                 st.bar_chart(df_chart)
-
-        else: st.info("Nenhum dado.")
+        else: st.info("Nenhum dado na nuvem.")
     elif senha_digitada: st.sidebar.error("Senha Incorreta")
 
 # ==============================================================================
 # TELA 3: SUPER ADMIN
 # ==============================================================================
 elif modo_acesso == "Super Admin":
-    st.title("🛠️ Super Admin (Manutenção)")
-    st.markdown("---")
-    
+    st.title("🛠️ Super Admin (Google Cloud)")
     SENHA_MESTRA = "Workaround&97146605"
     senha_digitada = st.sidebar.text_input("Senha Mestra", type="password")
     
     if senha_digitada == SENHA_MESTRA:
         st.sidebar.success("Acesso ROOT Liberado")
         
-        # 1. ZERAR TUDO (Lotes e IDs voltam a 1)
         st.subheader("1. Reset Geral (Perigo)")
-        st.warning("⚠️ Isso apaga TUDO e reinicia os lotes para BRASA00001 (IDs voltam a 1).")
-        if st.button("💣 ZERAR BANCO DE DADOS COMPLETO", type="primary"):
-            try:
-                conn = sqlite3.connect('dados_fabrica_v5.db')
-                c = conn.cursor()
-                c.execute("DROP TABLE IF EXISTS producao")
-                c.execute("DROP TABLE IF EXISTS sequencia_lotes")
-                conn.commit()
-                conn.close()
-                st.success("Banco deletado. Recarregue a página para ele recriar do zero (IDs resetados).")
-            except Exception as e: st.error(f"Erro: {e}")
-
+        st.warning("⚠️ Isso apaga TODAS as linhas da planilha 'Perfis_Producao' e 'Perfis_Lotes'.")
+        if st.button("💣 ZERAR PLANILHA COMPLETA", type="primary"):
+            with st.spinner("Limpando Google Sheets..."):
+                limpar_banco_completo()
+            st.success("Planilhas limpas com sucesso!")
+        
         st.markdown("---")
+        st.subheader("2. Ajustar Contador de Lotes")
         
-        # 2. AJUSTAR CONTADOR DE LOTE (AQUI VOCÊ CORRIGE A NUMERAÇÃO)
-        st.subheader("2. Ajustar Contador de Lotes (Correção Manual)")
-        st.info("Use isso se você apagou um lote (ex: 4) e quer que o próximo seja o 4 de novo (defina como 3).")
-        
-        conn = sqlite3.connect('dados_fabrica_v5.db')
-        df_seq = pd.read_sql_query("SELECT * FROM sequencia_lotes", conn)
-        st.dataframe(df_seq)
+        sh = conectar_google()
+        ws_lotes = sh.worksheet("Perfis_Lotes")
+        dados_lotes = ws_lotes.get_all_records()
+        df_lotes = pd.DataFrame(dados_lotes)
+        st.dataframe(df_lotes)
         
         c1, c2, c3 = st.columns(3)
         cod_sap_alvo = c1.number_input("Cód. SAP:", step=1, format="%d")
-        novo_valor = c2.number_input("Definir 'Último Número' para:", min_value=0, step=1)
-        
-        if c3.button("Salvar Correção de Lote"):
-            try:
-                c = conn.cursor()
-                c.execute("UPDATE sequencia_lotes SET ultimo_numero = ? WHERE cod_sap = ?", (novo_valor, cod_sap_alvo))
-                conn.commit()
-                st.success(f"Contador do SAP {cod_sap_alvo} atualizado para {novo_valor}. Próximo será {novo_valor + 1}.")
-                st.rerun()
-            except Exception as e: st.error(f"Erro: {e}")
-        conn.close()
-
+        novo_valor = c2.number_input("Novo Valor:", min_value=0, step=1)
+        if c3.button("Atualizar Lote"):
+            ajustar_contador_lote(cod_sap_alvo, novo_valor)
+            st.success("Atualizado!")
+            st.rerun()
+            
         st.markdown("---")
-
-        # 3. MANUTENÇÃO SIMPLES
-        st.subheader("3. Excluir Registros Específicos")
-        conn = sqlite3.connect('dados_fabrica_v5.db')
-        df_prod = pd.read_sql_query("SELECT * FROM producao", conn)
-        conn.close()
+        st.subheader("3. Excluir Linha por ID")
         
-        st.dataframe(df_prod, use_container_width=True)
+        df_prod = ler_banco()
+        st.dataframe(df_prod)
         
-        col_del_1, col_del_2 = st.columns([1, 2])
-        id_para_excluir = col_del_1.number_input("ID para Excluir:", min_value=0, step=1)
-        if col_del_2.button("🗑️ Excluir Linha"):
-            if id_para_excluir > 0:
-                try:
-                    conn = sqlite3.connect('dados_fabrica_v5.db')
-                    c = conn.cursor()
-                    c.execute("DELETE FROM producao WHERE id = ?", (id_para_excluir,))
-                    conn.commit()
-                    conn.close()
-                    st.success(f"ID {id_para_excluir} apagado.")
+        c_del1, c_del2 = st.columns([1,2])
+        id_del = c_del1.number_input("ID para excluir:", step=1, format="%d")
+        if c_del2.button("🗑️ Excluir"):
+            if id_del > 0:
+                with st.spinner("Deletando da nuvem..."):
+                    sucesso = excluir_linha_por_id(id_del)
+                if sucesso: 
+                    st.success("Excluído!")
                     st.rerun()
-                except Exception as e: st.error(f"Erro: {e}")
-
+                else: st.error("ID não encontrado.")
+    
     elif senha_digitada: st.error("Acesso Negado")
