@@ -345,10 +345,10 @@ elif modo_acesso == "Administrador (Escritório)":
                     "cod_sap": st.column_config.NumberColumn("SAP", format="%d", disabled=True),
                     "descricao": st.column_config.TextColumn("Descrição", disabled=True),
                     "qtd": st.column_config.NumberColumn("Qtd", disabled=True),
-                    "peso_real": st.column_config.NumberColumn("Peso Real", format="%.3f", disabled=True),
+                    "peso_real": st.column_config.NumberColumn("Peso Real (kg)", format="%.3f", disabled=True),
                     "tamanho_real_mm": st.column_config.NumberColumn("Comp. Real", format="%d", disabled=True),
                     "tamanho_corte_mm": st.column_config.NumberColumn("Comp. Corte", format="%d", disabled=True),
-                    "sucata": st.column_config.NumberColumn("Sucata", format="%.3f", disabled=True),
+                    "sucata": st.column_config.NumberColumn("Sucata (kg)", format="%.3f", disabled=True),
                     "peso_teorico": None
                 },
                 key="editor_admin"
@@ -359,52 +359,56 @@ elif modo_acesso == "Administrador (Escritório)":
                 st.success("Status atualizados com sucesso!")
                 st.rerun()
             
-            # --- LÓGICA DE EXPORTAÇÃO COM LINHA VIRTUAL ---
-            # 1. Cria uma lista vazia para montar as linhas do Excel
+            # --- LÓGICA DE EXPORTAÇÃO (CTRL+C / CTRL+V OTIMIZADA) ---
             lista_exportacao = []
 
             for index, row in df_banco.iterrows():
-                # A) Linha ORIGINAL (BRASAxxxxx)
-                linha_original = row.to_dict()
-                # Renomeia chaves para ficar bonito no Excel
-                linha_original_fmt = {
-                    'Lote': linha_original['lote'],
-                    'Status': linha_original['status_reserva'],
-                    'Reserva': linha_original['reserva'],
-                    'SAP': linha_original['cod_sap'],
-                    'Descrição': linha_original['descricao'],
-                    'Qtd': linha_original['qtd'],
-                    'Peso Real (kg)': formatar_br(linha_original['peso_real']),
-                    'Comp. Real (mm)': linha_original['tamanho_real_mm'],
-                    'Comp. Corte (mm)': linha_original['tamanho_corte_mm'],
-                    'Sucata (kg)': formatar_br(linha_original['sucata'])
+                # A) Linha ORIGINAL (Lote BRASA - Peso Teórico)
+                linha_original = {
+                    'Lote': row['lote'],
+                    'Reserva': row['reserva'],
+                    'SAP': row['cod_sap'],
+                    'Descrição': row['descricao'],
+                    'Status': row['status_reserva'],
+                    'Qtd': row['qtd'],
+                    # AQUI: Colocamos o PESO TEÓRICO para lançamento
+                    'Peso Lançamento (kg)': formatar_br(row['peso_teorico']), 
+                    'Comp. Real (mm)': row['tamanho_real_mm'],
+                    'Comp. Corte (mm)': row['tamanho_corte_mm'],
                 }
-                lista_exportacao.append(linha_original_fmt)
+                lista_exportacao.append(linha_original)
 
-                # B) Linha VIRTUAL (VIRTUAL) - Contendo o Saldo/Sucata
-                linha_virtual_fmt = {
-                    'Lote': "VIRTUAL",
-                    'Status': linha_original['status_reserva'], # Mantém status ou deixa vazio? Mantive para controle
-                    'Reserva': linha_original['reserva'],
-                    'SAP': linha_original['cod_sap'],
-                    'Descrição': f"SUCATA - {linha_original['descricao']}",
-                    'Qtd': 1, # Sucata conta como 1 "pacote" de sobra
-                    'Peso Real (kg)': formatar_br(linha_original['sucata']), # AQUI ESTÁ O PULO DO GATO: Peso Real vira a Sucata
-                    'Comp. Real (mm)': 0,
-                    'Comp. Corte (mm)': 0,
-                    'Sucata (kg)': "0,000" # A linha virtual não gera sucata dela mesma
-                }
-                lista_exportacao.append(linha_virtual_fmt)
+                # B) Linha VIRTUAL (Lote VIRTUAL - Peso Sucata)
+                if row['sucata'] > 0: # Só cria linha se tiver sucata
+                    linha_virtual = {
+                        'Lote': "VIRTUAL",
+                        'Reserva': row['reserva'],
+                        'SAP': row['cod_sap'],
+                        'Descrição': f"SUCATA - {row['descricao']}",
+                        'Status': row['status_reserva'],
+                        'Qtd': 1,
+                        # AQUI: Colocamos o PESO SUCATA para lançamento na mesma coluna
+                        'Peso Lançamento (kg)': formatar_br(row['sucata']), 
+                        'Comp. Real (mm)': 0,
+                        'Comp. Corte (mm)': 0,
+                    }
+                    lista_exportacao.append(linha_virtual)
 
             # Cria DataFrame final
             df_export_final = pd.DataFrame(lista_exportacao)
+            
+            # Reordena as colunas para ficar perfeito para copiar
+            cols_order = ['Lote', 'Reserva', 'SAP', 'Descrição', 'Peso Lançamento (kg)', 'Status', 'Qtd', 'Comp. Real (mm)', 'Comp. Corte (mm)']
+            # Garante que as colunas existem antes de ordenar
+            cols_final = [c for c in cols_order if c in df_export_final.columns]
+            df_export_final = df_export_final[cols_final]
                 
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                 df_export_final.to_excel(writer, index=False)
             
             st.markdown("---")
-            st.download_button("📥 Baixar Excel Completo (Com Virtual)", buffer.getvalue(), "Relatorio_Final.xlsx", type="primary")
+            st.download_button("📥 Baixar Excel (Pronto para Copiar/Colar)", buffer.getvalue(), "Relatorio_Lancamento.xlsx", type="primary")
             
             if st.button("🗑️ Limpar Banco de Relatórios", type="secondary"):
                 limpar_banco()
