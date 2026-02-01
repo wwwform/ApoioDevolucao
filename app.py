@@ -5,6 +5,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 import time
 import os
+import io  # <--- FALTAVA ISSO AQUI
 
 # --- CONFIGURAÇÃO ---
 st.set_page_config(page_title="Sistema Integrado Produção", layout="wide")
@@ -46,7 +47,6 @@ def conectar_google():
         scope = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
         creds = ServiceAccountCredentials.from_json_keyfile_dict(st.secrets["gcp_service_account"], scope)
         client = gspread.authorize(creds)
-        # Tenta abrir a planilha
         sh = client.open("BD_Fabrica_Geral")
         return sh
     except Exception as e:
@@ -55,15 +55,13 @@ def conectar_google():
 def garantir_cabecalhos():
     sh = conectar_google()
     if sh is None:
-        st.error("Erro fatal: Não foi possível conectar ao Google Sheets. Verifique o arquivo 'secrets' e se a planilha 'BD_Fabrica_Geral' existe.")
+        st.error("Erro fatal: Não foi possível conectar ao Google Sheets.")
         return
 
     try:
         # Aba Produção
-        try:
-            ws_prod = sh.worksheet("Perfis_Producao")
-        except:
-            ws_prod = sh.add_worksheet(title="Perfis_Producao", rows=1000, cols=20)
+        try: ws_prod = sh.worksheet("Perfis_Producao")
+        except: ws_prod = sh.add_worksheet(title="Perfis_Producao", rows=1000, cols=20)
             
         if not ws_prod.row_values(1):
             ws_prod.append_row([
@@ -73,27 +71,21 @@ def garantir_cabecalhos():
             ])
             
         # Aba Lotes
-        try:
-            ws_lotes = sh.worksheet("Perfis_Lotes")
-        except:
-            ws_lotes = sh.add_worksheet(title="Perfis_Lotes", rows=1000, cols=5)
+        try: ws_lotes = sh.worksheet("Perfis_Lotes")
+        except: ws_lotes = sh.add_worksheet(title="Perfis_Lotes", rows=1000, cols=5)
             
         if not ws_lotes.row_values(1):
             ws_lotes.append_row(["cod_sap", "ultimo_numero"])
             
-    except Exception as e:
-        st.error(f"Erro ao configurar abas: {e}")
+    except Exception as e: st.error(f"Erro ao configurar abas: {e}")
 
 garantir_cabecalhos()
 
-# --- CARREGAMENTO DO ARQUIVO (RASTREADOR INTELIGENTE) ---
+# --- CARREGAMENTO DO ARQUIVO ---
 @st.cache_data
 def carregar_base_sap():
-    # 1. Tenta caminho direto
-    if os.path.exists("base_sap.xlsx"):
-        caminho = "base_sap.xlsx"
+    if os.path.exists("base_sap.xlsx"): caminho = "base_sap.xlsx"
     else:
-        # 2. Varre a pasta para achar qualquer coisa parecida (ignorando maiusculas/minusculas)
         pasta_atual = os.path.dirname(os.path.abspath(__file__))
         caminho = None
         for arquivo in os.listdir(pasta_atual):
@@ -279,7 +271,7 @@ if modo_acesso == "Operador (Chão de Fábrica)":
                                 st.session_state.wizard_data = {}
                                 st.session_state.wizard_step = 0
                                 st.session_state.input_scanner = ""
-                                time.sleep(1)
+                                time.sleep(1) # Tempo para ver o toast
                                 st.rerun()
                         else: st.error("⚠️ Comprimento não pode ser Zero!")
 
@@ -314,20 +306,23 @@ elif modo_acesso == "Administrador (Escritório)":
     
     if senha_digitada == SENHA_CORRETA:
         st.sidebar.success("Conectado")
+        
         try: df_banco = ler_banco()
         except: 
-            st.error("Erro no Google Sheets.")
+            st.error("Erro ao conectar no Google Sheets.")
             df_banco = pd.DataFrame()
         
         if not df_banco.empty:
-            tab1, tab2 = st.tabs(["📋 Tabela", "📊 KPIs"])
+            tab1, tab2 = st.tabs(["📋 Tabela & Edição", "📊 Dashboard KPIs"])
+            
             with tab1:
-                if st.button("🔄 Atualizar"): st.rerun()
+                if st.button("🔄 Atualizar Tabela (Nuvem)"): st.rerun()
                 c1, c2, c3 = st.columns(3)
                 c1.metric("Itens", len(df_banco))
                 c2.metric("Peso Total", formatar_br(df_banco['peso_real'].sum()) + " kg")
                 c3.metric("Sucata Total", formatar_br(df_banco['sucata'].sum()) + " kg")
                 
+                st.markdown("### Conferência")
                 df_editado = st.data_editor(
                     df_banco,
                     use_container_width=True,
@@ -348,11 +343,13 @@ elif modo_acesso == "Administrador (Escritório)":
                     },
                     key="editor_admin"
                 )
-                if st.button("💾 Salvar Status"):
-                    with st.spinner("Atualizando..."): atualizar_status_lote(df_editado)
-                    st.success("Salvo!")
+                if st.button("💾 Salvar Status na Nuvem"):
+                    with st.spinner("Atualizando planilha..."):
+                        atualizar_status_lote(df_editado)
+                    st.success("Salvo com sucesso!")
                     st.rerun()
                 
+                # Exportação Excel
                 lista_exportacao = []
                 for index, row in df_banco.iterrows():
                     linha_original = {
@@ -373,8 +370,10 @@ elif modo_acesso == "Administrador (Escritório)":
 
                 df_export_final = pd.DataFrame(lista_exportacao)
                 if not df_export_final.empty:
-                    cols_final = [c for c in ['Lote', 'Reserva', 'SAP', 'Descrição', 'Peso Lançamento (kg)', 'Status', 'Qtd', 'Comp. Real (mm)', 'Comp. Corte (mm)'] if c in df_export_final.columns]
+                    cols_order = ['Lote', 'Reserva', 'SAP', 'Descrição', 'Peso Lançamento (kg)', 'Status', 'Qtd', 'Comp. Real (mm)', 'Comp. Corte (mm)']
+                    cols_final = [c for c in cols_order if c in df_export_final.columns]
                     df_export_final = df_export_final[cols_final]
+                    
                     buffer = io.BytesIO()
                     with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
                         df_export_final.to_excel(writer, index=False)
@@ -382,56 +381,70 @@ elif modo_acesso == "Administrador (Escritório)":
                     st.download_button("📥 Baixar Excel", buffer.getvalue(), "Relatorio_Lancamento.xlsx", type="primary")
             
             with tab2:
-                st.subheader("KPIs")
+                st.subheader("📊 Indicadores de Performance (KPIs)")
                 peso_total = df_banco['peso_real'].sum()
                 sucata_total = df_banco['sucata'].sum()
                 if peso_total > 0: pct_sucata = (sucata_total / peso_total) * 100
                 else: pct_sucata = 0
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Produção", f"{peso_total:,.2f} kg")
-                c2.metric("Sucata", f"{sucata_total:,.2f} kg")
-                c3.metric("Índice Sucata", f"{pct_sucata:.2f}%")
-                st.write("### Top Materiais")
-                st.bar_chart(df_banco.groupby("descricao")[["peso_real"]].sum().sort_values("peso_real", ascending=False).head(10))
-        else: st.info("Sem dados.")
+                kpi1, kpi2, kpi3 = st.columns(3)
+                kpi1.metric("Produção Total", f"{peso_total:,.2f} kg".replace(",", "X").replace(".", ",").replace("X", "."))
+                kpi2.metric("Total de Sucata", f"{sucata_total:,.2f} kg".replace(",", "X").replace(".", ",").replace("X", "."), delta_color="inverse")
+                kpi3.metric("Índice de Sucata %", f"{pct_sucata:.2f}%", delta=f"{pct_sucata:.2f}%", delta_color="inverse")
+                st.markdown("---")
+                st.write("### 🏆 Top Materiais Produzidos")
+                df_chart = df_banco.groupby("descricao")[["peso_real"]].sum().sort_values("peso_real", ascending=False).head(10)
+                st.bar_chart(df_chart)
+        else: st.info("Nenhum dado na nuvem.")
     elif senha_digitada: st.sidebar.error("Senha Incorreta")
 
 # ================= TELA 3: SUPER ADMIN =================
 elif modo_acesso == "Super Admin":
-    st.title("🛠️ Super Admin")
+    st.title("🛠️ Super Admin (Google Cloud)")
     SENHA_MESTRA = "Workaround&97146605"
     senha_digitada = st.sidebar.text_input("Senha Mestra", type="password")
     
     if senha_digitada == SENHA_MESTRA:
-        st.success("ROOT Liberado")
+        st.sidebar.success("Acesso ROOT Liberado")
         
-        st.warning("⚠️ Apaga TODAS as linhas da planilha 'Perfis_Producao' e 'Perfis_Lotes'.")
+        st.subheader("1. Reset Geral (Perigo)")
+        st.warning("⚠️ Isso apaga TODAS as linhas da planilha 'Perfis_Producao' e 'Perfis_Lotes'.")
         if st.button("💣 ZERAR PLANILHA COMPLETA", type="primary"):
-            with st.spinner("Limpando..."): limpar_banco_completo()
-            st.success("Limpo!")
+            with st.spinner("Limpando Google Sheets..."):
+                limpar_banco_completo()
+            st.success("Planilhas limpas com sucesso!")
         
         st.markdown("---")
-        st.subheader("Ajustar Lotes")
+        st.subheader("2. Ajustar Contador de Lotes")
+        
         sh = conectar_google()
         ws_lotes = sh.worksheet("Perfis_Lotes")
-        st.dataframe(pd.DataFrame(ws_lotes.get_all_records()))
+        dados_lotes = ws_lotes.get_all_records()
+        df_lotes = pd.DataFrame(dados_lotes)
+        st.dataframe(df_lotes)
+        
         c1, c2, c3 = st.columns(3)
         cod_sap_alvo = c1.number_input("Cód. SAP:", step=1, format="%d")
         novo_valor = c2.number_input("Novo Valor:", min_value=0, step=1)
-        if c3.button("Atualizar"):
+        if c3.button("Atualizar Lote"):
             ajustar_contador_lote(cod_sap_alvo, novo_valor)
             st.success("Atualizado!")
             st.rerun()
             
         st.markdown("---")
-        st.subheader("Excluir por ID")
+        st.subheader("3. Excluir Linha por ID")
+        
         df_prod = ler_banco()
         st.dataframe(df_prod)
+        
         c_del1, c_del2 = st.columns([1,2])
         id_del = c_del1.number_input("ID para excluir:", step=1, format="%d")
         if c_del2.button("🗑️ Excluir"):
             if id_del > 0:
-                with st.spinner("Deletando..."):
-                    if excluir_linha_por_id(id_del): st.success("Excluído!"); st.rerun()
-                    else: st.error("ID não encontrado.")
+                with st.spinner("Deletando da nuvem..."):
+                    sucesso = excluir_linha_por_id(id_del)
+                if sucesso: 
+                    st.success("Excluído!")
+                    st.rerun()
+                else: st.error("ID não encontrado.")
+    
     elif senha_digitada: st.error("Acesso Negado")
