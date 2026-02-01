@@ -8,17 +8,13 @@ from datetime import datetime
 # --- CONFIGURAÇÃO ---
 st.set_page_config(page_title="Sistema Integrado Produção", layout="wide")
 
-# CSS BLINDADO (Remove Menu, Rodapé e Ajusta Visual)
+# CSS BLINDADO
 st.markdown("""
 <style>
-    /* Esconde Menu Hamburger (Superior Direito) */
     #MainMenu {visibility: hidden;}
-    /* Esconde Rodapé 'Made with Streamlit' */
     footer {visibility: hidden;}
-    /* Esconde Cabeçalho colorido padrão */
     header {visibility: hidden;}
     
-    /* Estilos funcionais */
     div[data-testid="stTextInput"] label, div[data-testid="stNumberInput"] label {
         font-size: 1.5rem !important;
         font-weight: bold;
@@ -36,12 +32,11 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- 1. BANCO DE DADOS (V5 com Status) ---
+# --- 1. BANCO DE DADOS ---
 def init_db():
     conn = sqlite3.connect('dados_fabrica_v5.db', check_same_thread=False)
     c = conn.cursor()
     
-    # Tabela Produção
     c.execute('''
         CREATE TABLE IF NOT EXISTS producao (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -60,7 +55,6 @@ def init_db():
         )
     ''')
     
-    # Tabela Sequência (Lotes)
     c.execute('''
         CREATE TABLE IF NOT EXISTS sequencia_lotes (
             cod_sap INTEGER PRIMARY KEY,
@@ -111,7 +105,7 @@ def salvar_no_banco(dados):
         datetime.now().strftime("%d/%m/%Y %H:%M:%S"),
         lote_oficial,
         dados['Reserva'],
-        "Pendente", # Status inicial padrão
+        "Pendente",
         dados['Cód. SAP'],
         dados['Descrição'],
         dados['Qtd'],
@@ -132,14 +126,10 @@ def ler_banco():
     return df
 
 def atualizar_status_lote(df_editado):
-    """Atualiza o status com base na edição do Admin"""
     conn = sqlite3.connect('dados_fabrica_v5.db', check_same_thread=False)
     c = conn.cursor()
-    
-    # Itera sobre as linhas editadas e atualiza no banco
     for index, row in df_editado.iterrows():
         c.execute("UPDATE producao SET status_reserva = ? WHERE id = ?", (row['status_reserva'], row['id']))
-        
     conn.commit()
     conn.close()
 
@@ -207,7 +197,7 @@ if modo_acesso == "Operador (Chão de Fábrica)":
         st.info(f"🏷️ Próximo Lote Disponível: **{st.session_state.proximo_lote_visual}**")
         st.markdown("---")
         
-        # --- PASSO 1: RESERVA ---
+        # PASSO 1
         if st.session_state.wizard_step == 1:
             with st.form("form_reserva"):
                 reserva = st.text_input("1. Nº da Reserva:", key=f"res_{st.session_state.item_id}")
@@ -220,7 +210,7 @@ if modo_acesso == "Operador (Chão de Fábrica)":
                     else:
                         st.error("⚠️ Digite a Reserva!")
 
-        # --- PASSO 2: QUANTIDADE ---
+        # PASSO 2
         elif st.session_state.wizard_step == 2:
             with st.form("form_qtd"):
                 qtd = st.number_input("2. Quantidade (Peças):", min_value=1, step=1, value=1, key=f"qtd_{st.session_state.item_id}")
@@ -230,7 +220,7 @@ if modo_acesso == "Operador (Chão de Fábrica)":
                     st.session_state.wizard_step = 3
                     st.rerun()
 
-        # --- PASSO 3: PESO ---
+        # PASSO 3
         elif st.session_state.wizard_step == 3:
             with st.form("form_peso"):
                 peso = st.number_input("3. Peso Real (kg):", min_value=0.000, step=0.001, format="%.3f", key=f"peso_{st.session_state.item_id}")
@@ -243,7 +233,7 @@ if modo_acesso == "Operador (Chão de Fábrica)":
                     else:
                         st.error("⚠️ Peso não pode ser Zero!")
 
-        # --- PASSO 4: COMPRIMENTO ---
+        # PASSO 4
         elif st.session_state.wizard_step == 4:
             with st.form("form_comp"):
                 comp = st.number_input("4. Comprimento Real (mm):", min_value=0, step=1, key=f"comp_{st.session_state.item_id}")
@@ -336,25 +326,20 @@ elif modo_acesso == "Administrador (Escritório)":
             c3.metric("Sucata Total", formatar_br(df_banco['sucata'].sum()) + " kg")
             
             st.markdown("### Conferência e Status")
-            st.info("💡 Você pode alterar o 'Status Reserva' diretamente na tabela abaixo.")
             
-            # Tabela Editável para o Admin
+            # Tabela Editável
             df_editado = st.data_editor(
                 df_banco,
                 use_container_width=True,
                 column_config={
-                    "id": None, # Esconde o ID
+                    "id": None, 
                     "data_hora": st.column_config.TextColumn("Data", disabled=True),
                     "lote": st.column_config.TextColumn("Lote", disabled=True),
                     "reserva": st.column_config.TextColumn("Reserva", disabled=True),
                     "status_reserva": st.column_config.SelectboxColumn(
                         "Status Reserva",
-                        help="Selecione o status do lançamento",
                         width="medium",
-                        options=[
-                            "Pendente",
-                            "Ok - Lançada"
-                        ],
+                        options=["Pendente", "Ok - Lançada"],
                         required=True
                     ),
                     "cod_sap": st.column_config.NumberColumn("SAP", format="%d", disabled=True),
@@ -364,35 +349,62 @@ elif modo_acesso == "Administrador (Escritório)":
                     "tamanho_real_mm": st.column_config.NumberColumn("Comp. Real", format="%d", disabled=True),
                     "tamanho_corte_mm": st.column_config.NumberColumn("Comp. Corte", format="%d", disabled=True),
                     "sucata": st.column_config.NumberColumn("Sucata", format="%.3f", disabled=True),
-                    "peso_teorico": None # Oculta teórico da visão rápida
+                    "peso_teorico": None
                 },
                 key="editor_admin"
             )
             
-            # Botão para salvar alterações de status
             if st.button("💾 Salvar Alterações de Status"):
-                # Compara se houve mudança e salva no banco
                 atualizar_status_lote(df_editado)
                 st.success("Status atualizados com sucesso!")
                 st.rerun()
             
-            # --- EXPORTAÇÃO ---
-            df_export = df_banco.copy() # Pega dados originais do banco (com status atualizado se der rerun)
-            df_export.rename(columns={
-                'lote': 'Lote',
-                'status_reserva': 'Status',
-                'tamanho_real_mm': 'Comp. Real (mm)',
-                'tamanho_corte_mm': 'Comp. Considerado (mm)'
-            }, inplace=True)
-            for col in ['peso_real', 'peso_teorico', 'sucata']:
-                df_export[col] = df_export[col].apply(formatar_br)
+            # --- LÓGICA DE EXPORTAÇÃO COM LINHA VIRTUAL ---
+            # 1. Cria uma lista vazia para montar as linhas do Excel
+            lista_exportacao = []
+
+            for index, row in df_banco.iterrows():
+                # A) Linha ORIGINAL (BRASAxxxxx)
+                linha_original = row.to_dict()
+                # Renomeia chaves para ficar bonito no Excel
+                linha_original_fmt = {
+                    'Lote': linha_original['lote'],
+                    'Status': linha_original['status_reserva'],
+                    'Reserva': linha_original['reserva'],
+                    'SAP': linha_original['cod_sap'],
+                    'Descrição': linha_original['descricao'],
+                    'Qtd': linha_original['qtd'],
+                    'Peso Real (kg)': formatar_br(linha_original['peso_real']),
+                    'Comp. Real (mm)': linha_original['tamanho_real_mm'],
+                    'Comp. Corte (mm)': linha_original['tamanho_corte_mm'],
+                    'Sucata (kg)': formatar_br(linha_original['sucata'])
+                }
+                lista_exportacao.append(linha_original_fmt)
+
+                # B) Linha VIRTUAL (VIRTUAL) - Contendo o Saldo/Sucata
+                linha_virtual_fmt = {
+                    'Lote': "VIRTUAL",
+                    'Status': linha_original['status_reserva'], # Mantém status ou deixa vazio? Mantive para controle
+                    'Reserva': linha_original['reserva'],
+                    'SAP': linha_original['cod_sap'],
+                    'Descrição': f"SUCATA - {linha_original['descricao']}",
+                    'Qtd': 1, # Sucata conta como 1 "pacote" de sobra
+                    'Peso Real (kg)': formatar_br(linha_original['sucata']), # AQUI ESTÁ O PULO DO GATO: Peso Real vira a Sucata
+                    'Comp. Real (mm)': 0,
+                    'Comp. Corte (mm)': 0,
+                    'Sucata (kg)': "0,000" # A linha virtual não gera sucata dela mesma
+                }
+                lista_exportacao.append(linha_virtual_fmt)
+
+            # Cria DataFrame final
+            df_export_final = pd.DataFrame(lista_exportacao)
                 
             buffer = io.BytesIO()
             with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                df_export.to_excel(writer, index=False)
+                df_export_final.to_excel(writer, index=False)
             
             st.markdown("---")
-            st.download_button("📥 Baixar Excel Completo", buffer.getvalue(), "Relatorio.xlsx", type="primary")
+            st.download_button("📥 Baixar Excel Completo (Com Virtual)", buffer.getvalue(), "Relatorio_Final.xlsx", type="primary")
             
             if st.button("🗑️ Limpar Banco de Relatórios", type="secondary"):
                 limpar_banco()
