@@ -8,19 +8,28 @@ from datetime import datetime
 # --- CONFIGURAÇÃO ---
 st.set_page_config(page_title="Sistema Integrado Produção", layout="wide")
 
-# --- CSS SUPER BLINDADO (Remove Rodapé, Menu e Botão Deploy) ---
+# CSS BLINDADO (MODO KIOSK REAL)
 st.markdown("""
 <style>
-    /* Esconde o menu de hamburguer (3 pontinhos) */
+    /* Esconde o menu hambúrguer (3 pontinhos no topo direito) */
     #MainMenu {visibility: hidden;}
+    
     /* Esconde o rodapé 'Made with Streamlit' */
     footer {visibility: hidden;}
-    /* Esconde o cabeçalho colorido */
+    
+    /* Esconde o cabeçalho colorido padrão */
     header {visibility: hidden;}
-    /* Esconde o botão de Deploy se aparecer */
+    
+    /* Esconde a barra de ferramentas do desenvolvedor (onde fica o Reboot/Manage App) */
+    [data-testid="stToolbar"] {visibility: hidden !important; display: none !important;}
+    
+    /* Esconde a decoração colorida no topo */
+    [data-testid="stDecoration"] {visibility: hidden !important; display: none !important;}
+    
+    /* Esconde botão de Deploy se ele tentar aparecer */
     .stDeployButton {display:none;}
     
-    /* Estilo dos Inputs */
+    /* Ajuste de fontes para os inputs */
     div[data-testid="stTextInput"] label, div[data-testid="stNumberInput"] label {
         font-size: 1.5rem !important;
         font-weight: bold;
@@ -175,10 +184,11 @@ modo_acesso = st.sidebar.radio("Selecione o Perfil:",
     ["Operador (Chão de Fábrica)", "Administrador (Escritório)", "Super Admin"])
 
 df_sap = carregar_base_sap()
-if df_sap is None: st.error("ERRO: `base_sap.xlsx` não encontrado.")
+if df_sap is None:
+    st.error("ERRO: `base_sap.xlsx` não encontrado.")
 
 # ==============================================================================
-# TELA 1: OPERADOR (Tablet)
+# TELA 1: OPERADOR
 # ==============================================================================
 if modo_acesso == "Operador (Chão de Fábrica)":
     st.title("🏭 Operador: Bipagem")
@@ -277,7 +287,7 @@ if modo_acesso == "Operador (Chão de Fábrica)":
 
         if st.session_state.wizard_step > 0: wizard_item()
         st.text_input("BIPAR CÓDIGO:", key="input_scanner", on_change=iniciar_bipagem)
-        st.info("ℹ️ Sistema com contador de lote sequencial e indestrutível.")
+        # REMOVIDA A MENSAGEM DO OPERADOR
 
 # ==============================================================================
 # TELA 2: ADMINISTRADOR
@@ -347,7 +357,7 @@ elif modo_acesso == "Administrador (Escritório)":
                         'Comp. Corte (mm)': row['tamanho_corte_mm'],
                     }
                     lista_exportacao.append(linha_original)
-                    if row['sucata'] > 0:
+                    if row['sucata'] > 0.001:
                         linha_virtual = {
                             'Lote': "VIRTUAL",
                             'Reserva': row['reserva'],
@@ -370,7 +380,7 @@ elif modo_acesso == "Administrador (Escritório)":
                     df_export_final.to_excel(writer, index=False)
                 
                 st.markdown("---")
-                st.download_button("📥 Baixar Excel (Pronto para Copiar/Colar)", buffer.getvalue(), "Relatorio_Lancamento.xlsx", type="primary")
+                st.download_button("📥 Baixar Excel", buffer.getvalue(), "Relatorio_Lancamento.xlsx", type="primary")
                 if st.button("🗑️ Limpar Banco de Relatórios", type="secondary"):
                     limpar_banco()
                     st.rerun()
@@ -417,6 +427,7 @@ elif modo_acesso == "Super Admin":
     if senha_digitada == SENHA_MESTRA:
         st.sidebar.success("Acesso ROOT Liberado")
         
+        # 1. ZERAR TUDO (Lotes e IDs voltam a 1)
         st.subheader("1. Reset Geral (Perigo)")
         st.warning("⚠️ Isso apaga TUDO e reinicia os lotes para BRASA00001 (IDs voltam a 1).")
         if st.button("💣 ZERAR BANCO DE DADOS COMPLETO", type="primary"):
@@ -427,12 +438,15 @@ elif modo_acesso == "Super Admin":
                 c.execute("DROP TABLE IF EXISTS sequencia_lotes")
                 conn.commit()
                 conn.close()
-                st.success("Banco deletado. Recarregue a página.")
+                st.success("Banco deletado. Recarregue a página para ele recriar do zero (IDs resetados).")
             except Exception as e: st.error(f"Erro: {e}")
 
         st.markdown("---")
         
-        st.subheader("2. Ajustar Contador de Lotes")
+        # 2. AJUSTAR CONTADOR DE LOTE (AQUI VOCÊ CORRIGE A NUMERAÇÃO)
+        st.subheader("2. Ajustar Contador de Lotes (Correção Manual)")
+        st.info("Use isso se você apagou um lote (ex: 4) e quer que o próximo seja o 4 de novo (defina como 3).")
+        
         conn = sqlite3.connect('dados_fabrica_v5.db')
         df_seq = pd.read_sql_query("SELECT * FROM sequencia_lotes", conn)
         st.dataframe(df_seq)
@@ -441,22 +455,24 @@ elif modo_acesso == "Super Admin":
         cod_sap_alvo = c1.number_input("Cód. SAP:", step=1, format="%d")
         novo_valor = c2.number_input("Definir 'Último Número' para:", min_value=0, step=1)
         
-        if c3.button("Salvar Correção"):
+        if c3.button("Salvar Correção de Lote"):
             try:
                 c = conn.cursor()
                 c.execute("UPDATE sequencia_lotes SET ultimo_numero = ? WHERE cod_sap = ?", (novo_valor, cod_sap_alvo))
                 conn.commit()
-                st.success("Contador atualizado.")
+                st.success(f"Contador do SAP {cod_sap_alvo} atualizado para {novo_valor}. Próximo será {novo_valor + 1}.")
                 st.rerun()
             except Exception as e: st.error(f"Erro: {e}")
         conn.close()
 
         st.markdown("---")
 
+        # 3. MANUTENÇÃO SIMPLES
         st.subheader("3. Excluir Registros Específicos")
         conn = sqlite3.connect('dados_fabrica_v5.db')
         df_prod = pd.read_sql_query("SELECT * FROM producao", conn)
         conn.close()
+        
         st.dataframe(df_prod, use_container_width=True)
         
         col_del_1, col_del_2 = st.columns([1, 2])
