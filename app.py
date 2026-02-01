@@ -10,7 +10,7 @@ import io
 # --- CONFIGURAÇÃO ---
 st.set_page_config(page_title="Sistema Integrado Produção", layout="wide")
 
-# --- CSS NUCLEAR ---
+# --- CSS NUCLEAR (Visual Limpo) ---
 st.markdown("""
 <style>
     header[data-testid="stHeader"] {visibility: hidden; display: none;}
@@ -67,24 +67,31 @@ def garantir_cabecalhos():
 
 garantir_cabecalhos()
 
-# --- FUNÇÕES DE LIMPEZA E FORMATAÇÃO (O SEGREDO) ---
+# --- TRATAMENTO DE DADOS ---
 def limpar_numero_sap(valor):
-    """Transforma '392,5' (Texto/Excel) em 392.5 (Python Float) para cálculo"""
+    """
+    Função blindada para converter números brasileiros.
+    Ex: '1.200,50' -> 1200.5
+    Ex: '392,5' -> 392.5
+    """
     if pd.isna(valor): return 0.0
     s = str(valor).strip()
     if not s: return 0.0
+    
     # Se já for número, retorna
     if isinstance(valor, (int, float)): return float(valor)
-    # Troca vírgula por ponto para o Python não chorar
-    s = s.replace(',', '.')
+    
+    # Remove pontos de milhar (se houver) e troca vírgula por ponto
+    # CUIDADO: Se o Excel estiver salvando como 392.500 (milhar), isso corrige.
+    s = s.replace('.', '') # Remove todos os pontos
+    s = s.replace(',', '.') # Transforma a vírgula em ponto decimal
+    
     try: return float(s)
     except: return 0.0
 
 def formatar_br(valor):
-    """Transforma 392.5 (Python) em '392,500' (Visual BR)"""
     try:
         val = float(valor)
-        # Formata com 3 casas decimais e inverte ponto/vírgula
         return f"{val:,.3f}".replace(",", "X").replace(".", ",").replace("X", ".")
     except: return "0,000"
 
@@ -92,12 +99,12 @@ def regra_corte(mm):
     try: return (int(float(mm)) // 500) * 500
     except: return 0
 
-# --- CARREGAMENTO DO ARQUIVO ---
 @st.cache_data
 def carregar_base_sap():
     caminho = None
     if os.path.exists("base_sap.xlsx"): caminho = "base_sap.xlsx"
     else:
+        # Varredura inteligente
         pasta = os.path.dirname(os.path.abspath(__file__))
         for f in os.listdir(pasta):
             if f.lower() == "base_sap.xlsx":
@@ -108,14 +115,19 @@ def carregar_base_sap():
 
     try:
         df = pd.read_excel(caminho)
-        df.columns = df.columns.str.strip()
-        df['Produto'] = pd.to_numeric(df['Produto'], errors='coerce').fillna(0).astype(int)
+        # Normaliza colunas para evitar erro de espaço "Peso "
+        df.columns = df.columns.str.strip().str.upper()
         
-        # AQUI A CORREÇÃO: Limpa a coluna de peso para garantir float correto
-        if 'Peso por Metro' in df.columns:
-            df['Peso por Metro'] = df['Peso por Metro'].apply(limpar_numero_sap)
-            
-        return df
+        # Procura coluna de Produto
+        col_prod = next((c for c in df.columns if 'PRODUTO' in c), None)
+        # Procura coluna de Peso
+        col_peso = next((c for c in df.columns if 'PESO' in c and 'METRO' in c), None)
+        
+        if col_prod and col_peso:
+            df['PRODUTO'] = pd.to_numeric(df[col_prod], errors='coerce').fillna(0).astype(int)
+            df['PESO_FATOR'] = df[col_peso].apply(limpar_numero_sap)
+            return df[['PRODUTO', 'DESCRIÇÃO DO PRODUTO', 'PESO_FATOR']] # Retorna só o necessário
+        return None
     except: return None
 
 # --- FUNÇÕES DE BANCO ---
@@ -209,6 +221,11 @@ if modo_acesso == "Operador (Chão de Fábrica)":
         @st.dialog("📦 Entrada")
         def wizard():
             st.write(f"**Item:** {st.session_state.wizard_data.get('Cód. SAP')} - {st.session_state.wizard_data.get('Descrição')}")
+            
+            # MOSTRA O FATOR PARA CONFERÊNCIA
+            fator_debug = st.session_state.wizard_data.get('PESO_FATOR', 0)
+            st.caption(f"ℹ️ Fator SAP Lido: {fator_debug} kg/m")
+            
             st.markdown("---")
             if st.session_state.wizard_step == 1:
                 with st.form("f1"):
@@ -239,7 +256,7 @@ if modo_acesso == "Operador (Chão de Fábrica)":
                     if st.form_submit_button("✅ SALVAR", type="primary"):
                         if comp > 0:
                             with st.spinner("Salvando..."):
-                                pm = st.session_state.wizard_data['Peso/m']
+                                pm = st.session_state.wizard_data['PESO_FATOR']
                                 qtd = st.session_state.wizard_data['Qtd']
                                 pr = st.session_state.wizard_data['Peso Balança (kg)']
                                 tc = regra_corte(comp)
@@ -267,12 +284,12 @@ if modo_acesso == "Operador (Chão de Fábrica)":
             if cod:
                 try:
                     cod_limpo = int(str(cod).strip().split(":")[-1])
-                    prod = df_sap[df_sap['Produto'] == cod_limpo]
+                    prod = df_sap[df_sap['PRODUTO'] == cod_limpo]
                     if not prod.empty:
                         st.session_state.wizard_data = {
                             "Cód. SAP": cod_limpo,
-                            "Descrição": prod.iloc[0]['Descrição do produto'],
-                            "Peso/m": prod.iloc[0]['Peso por Metro']
+                            "Descrição": prod.iloc[0]['DESCRIÇÃO DO PRODUTO'],
+                            "PESO_FATOR": prod.iloc[0]['PESO_FATOR']
                         }
                         st.session_state.wizard_step = 1
                     else: st.toast("Material não encontrado", icon="🚫")
@@ -306,7 +323,6 @@ elif modo_acesso == "Administrador (Escritório)":
                     st.success("Salvo!")
                     st.rerun()
                 
-                # Export
                 lst = []
                 for _, r in df.iterrows():
                     lst.append({'Lote': r['lote'], 'Reserva': r['reserva'], 'SAP': r['cod_sap'], 'Descrição': r['descricao'], 'Status': r['status_reserva'], 'Qtd': r['qtd'], 'Peso Lançamento (kg)': formatar_br(r['peso_teorico']), 'Comp. Real': r['tamanho_real_mm'], 'Comp. Corte': r['tamanho_corte_mm']})
@@ -319,7 +335,7 @@ elif modo_acesso == "Administrador (Escritório)":
                     df_exp = df_exp[cols_final]
                     buf = io.BytesIO()
                     with pd.ExcelWriter(buf, engine='openpyxl') as writer: df_exp.to_excel(writer, index=False)
-                    st.download_button("Baixar Excel", buf.getvalue(), "Relatorio_Lancamento.xlsx", "primary")
+                    st.download_button("Baixar Excel", buf.getvalue(), "Relatorio.xlsx", "primary")
             
             with t2:
                 pt = df['peso_real'].sum()
