@@ -8,13 +8,19 @@ from datetime import datetime
 # --- CONFIGURAÇÃO ---
 st.set_page_config(page_title="Sistema Integrado Produção", layout="wide")
 
-# CSS BLINDADO (Azul)
+# --- CSS SUPER BLINDADO (Remove Rodapé, Menu e Botão Deploy) ---
 st.markdown("""
 <style>
+    /* Esconde o menu de hamburguer (3 pontinhos) */
     #MainMenu {visibility: hidden;}
+    /* Esconde o rodapé 'Made with Streamlit' */
     footer {visibility: hidden;}
+    /* Esconde o cabeçalho colorido */
     header {visibility: hidden;}
+    /* Esconde o botão de Deploy se aparecer */
+    .stDeployButton {display:none;}
     
+    /* Estilo dos Inputs */
     div[data-testid="stTextInput"] label, div[data-testid="stNumberInput"] label {
         font-size: 1.5rem !important;
         font-weight: bold;
@@ -172,7 +178,7 @@ df_sap = carregar_base_sap()
 if df_sap is None: st.error("ERRO: `base_sap.xlsx` não encontrado.")
 
 # ==============================================================================
-# TELA 1: OPERADOR
+# TELA 1: OPERADOR (Tablet)
 # ==============================================================================
 if modo_acesso == "Operador (Chão de Fábrica)":
     st.title("🏭 Operador: Bipagem")
@@ -283,80 +289,118 @@ elif modo_acesso == "Administrador (Escritório)":
     
     if senha_digitada == SENHA_CORRETA:
         st.sidebar.success("Conectado")
-        if st.button("🔄 Atualizar Tabela"): st.rerun()
+        
+        # LER O BANCO
         df_banco = ler_banco()
         
         if not df_banco.empty:
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Itens", len(df_banco))
-            c2.metric("Peso Total", formatar_br(df_banco['peso_real'].sum()) + " kg")
-            c3.metric("Sucata Total", formatar_br(df_banco['sucata'].sum()) + " kg")
-            st.markdown("### Conferência e Status")
-            df_editado = st.data_editor(
-                df_banco,
-                use_container_width=True,
-                column_config={
-                    "id": None, 
-                    "data_hora": st.column_config.TextColumn("Data", disabled=True),
-                    "lote": st.column_config.TextColumn("Lote", disabled=True),
-                    "reserva": st.column_config.TextColumn("Reserva", disabled=True),
-                    "status_reserva": st.column_config.SelectboxColumn("Status", width="medium", options=["Pendente", "Ok - Lançada"], required=True),
-                    "cod_sap": st.column_config.NumberColumn("SAP", format="%d", disabled=True),
-                    "descricao": st.column_config.TextColumn("Descrição", disabled=True),
-                    "qtd": st.column_config.NumberColumn("Qtd", disabled=True),
-                    "peso_real": st.column_config.NumberColumn("Peso Real (kg)", format="%.3f", disabled=True),
-                    "tamanho_real_mm": st.column_config.NumberColumn("Comp. Real", format="%d", disabled=True),
-                    "tamanho_corte_mm": st.column_config.NumberColumn("Comp. Corte", format="%d", disabled=True),
-                    "sucata": st.column_config.NumberColumn("Sucata (kg)", format="%.3f", disabled=True),
-                    "peso_teorico": None
-                },
-                key="editor_admin"
-            )
-            if st.button("💾 Salvar Alterações de Status"):
-                atualizar_status_lote(df_editado)
-                st.success("Status atualizados com sucesso!")
-                st.rerun()
+            # --- CRIAÇÃO DAS ABAS (Tabela e Dashboard) ---
+            tab1, tab2 = st.tabs(["📋 Tabela & Edição", "📊 Dashboard KPIs"])
             
-            lista_exportacao = []
-            for index, row in df_banco.iterrows():
-                linha_original = {
-                    'Lote': row['lote'],
-                    'Reserva': row['reserva'],
-                    'SAP': row['cod_sap'],
-                    'Descrição': row['descricao'],
-                    'Status': row['status_reserva'],
-                    'Qtd': row['qtd'],
-                    'Peso Lançamento (kg)': formatar_br(row['peso_teorico']), 
-                    'Comp. Real (mm)': row['tamanho_real_mm'],
-                    'Comp. Corte (mm)': row['tamanho_corte_mm'],
-                }
-                lista_exportacao.append(linha_original)
-                if row['sucata'] > 0:
-                    linha_virtual = {
-                        'Lote': "VIRTUAL",
+            # --- ABA 1: TABELA ---
+            with tab1:
+                if st.button("🔄 Atualizar Tabela"): st.rerun()
+                
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Itens", len(df_banco))
+                c2.metric("Peso Total", formatar_br(df_banco['peso_real'].sum()) + " kg")
+                c3.metric("Sucata Total", formatar_br(df_banco['sucata'].sum()) + " kg")
+                
+                st.markdown("### Conferência e Status")
+                df_editado = st.data_editor(
+                    df_banco,
+                    use_container_width=True,
+                    column_config={
+                        "id": None, 
+                        "data_hora": st.column_config.TextColumn("Data", disabled=True),
+                        "lote": st.column_config.TextColumn("Lote", disabled=True),
+                        "reserva": st.column_config.TextColumn("Reserva", disabled=True),
+                        "status_reserva": st.column_config.SelectboxColumn("Status", width="medium", options=["Pendente", "Ok - Lançada"], required=True),
+                        "cod_sap": st.column_config.NumberColumn("SAP", format="%d", disabled=True),
+                        "descricao": st.column_config.TextColumn("Descrição", disabled=True),
+                        "qtd": st.column_config.NumberColumn("Qtd", disabled=True),
+                        "peso_real": st.column_config.NumberColumn("Peso Real (kg)", format="%.3f", disabled=True),
+                        "tamanho_real_mm": st.column_config.NumberColumn("Comp. Real", format="%d", disabled=True),
+                        "tamanho_corte_mm": st.column_config.NumberColumn("Comp. Corte", format="%d", disabled=True),
+                        "sucata": st.column_config.NumberColumn("Sucata (kg)", format="%.3f", disabled=True),
+                        "peso_teorico": None
+                    },
+                    key="editor_admin"
+                )
+                if st.button("💾 Salvar Alterações de Status"):
+                    atualizar_status_lote(df_editado)
+                    st.success("Status atualizados com sucesso!")
+                    st.rerun()
+                
+                # --- EXPORTAÇÃO EXCEL ---
+                lista_exportacao = []
+                for index, row in df_banco.iterrows():
+                    linha_original = {
+                        'Lote': row['lote'],
                         'Reserva': row['reserva'],
                         'SAP': row['cod_sap'],
-                        'Descrição': f"SUCATA - {row['descricao']}",
+                        'Descrição': row['descricao'],
                         'Status': row['status_reserva'],
-                        'Qtd': 1,
-                        'Peso Lançamento (kg)': formatar_br(row['sucata']), 
-                        'Comp. Real (mm)': 0,
-                        'Comp. Corte (mm)': 0,
+                        'Qtd': row['qtd'],
+                        'Peso Lançamento (kg)': formatar_br(row['peso_teorico']), 
+                        'Comp. Real (mm)': row['tamanho_real_mm'],
+                        'Comp. Corte (mm)': row['tamanho_corte_mm'],
                     }
-                    lista_exportacao.append(linha_virtual)
+                    lista_exportacao.append(linha_original)
+                    if row['sucata'] > 0:
+                        linha_virtual = {
+                            'Lote': "VIRTUAL",
+                            'Reserva': row['reserva'],
+                            'SAP': row['cod_sap'],
+                            'Descrição': f"SUCATA - {row['descricao']}",
+                            'Status': row['status_reserva'],
+                            'Qtd': 1,
+                            'Peso Lançamento (kg)': formatar_br(row['sucata']), 
+                            'Comp. Real (mm)': 0,
+                            'Comp. Corte (mm)': 0,
+                        }
+                        lista_exportacao.append(linha_virtual)
 
-            df_export_final = pd.DataFrame(lista_exportacao)
-            cols_order = ['Lote', 'Reserva', 'SAP', 'Descrição', 'Peso Lançamento (kg)', 'Status', 'Qtd', 'Comp. Real (mm)', 'Comp. Corte (mm)']
-            cols_final = [c for c in cols_order if c in df_export_final.columns]
-            df_export_final = df_export_final[cols_final]
-            buffer = io.BytesIO()
-            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                df_export_final.to_excel(writer, index=False)
-            st.markdown("---")
-            st.download_button("📥 Baixar Excel", buffer.getvalue(), "Relatorio_Lancamento.xlsx", type="primary")
-            if st.button("🗑️ Limpar Banco de Relatórios", type="secondary"):
-                limpar_banco()
-                st.rerun()
+                df_export_final = pd.DataFrame(lista_exportacao)
+                cols_order = ['Lote', 'Reserva', 'SAP', 'Descrição', 'Peso Lançamento (kg)', 'Status', 'Qtd', 'Comp. Real (mm)', 'Comp. Corte (mm)']
+                cols_final = [c for c in cols_order if c in df_export_final.columns]
+                df_export_final = df_export_final[cols_final]
+                buffer = io.BytesIO()
+                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                    df_export_final.to_excel(writer, index=False)
+                
+                st.markdown("---")
+                st.download_button("📥 Baixar Excel (Pronto para Copiar/Colar)", buffer.getvalue(), "Relatorio_Lancamento.xlsx", type="primary")
+                if st.button("🗑️ Limpar Banco de Relatórios", type="secondary"):
+                    limpar_banco()
+                    st.rerun()
+
+            # --- ABA 2: DASHBOARD (NOVA!) ---
+            with tab2:
+                st.subheader("📊 Indicadores de Performance (KPIs)")
+                
+                # Cálculos
+                peso_total = df_banco['peso_real'].sum()
+                sucata_total = df_banco['sucata'].sum()
+                # Evita divisão por zero
+                if peso_total > 0:
+                    pct_sucata = (sucata_total / peso_total) * 100
+                else:
+                    pct_sucata = 0
+                
+                # Exibição dos KPIs
+                kpi1, kpi2, kpi3 = st.columns(3)
+                kpi1.metric("Produção Total", f"{peso_total:,.2f} kg".replace(",", "X").replace(".", ",").replace("X", "."))
+                kpi2.metric("Total de Sucata", f"{sucata_total:,.2f} kg".replace(",", "X").replace(".", ",").replace("X", "."), delta_color="inverse")
+                kpi3.metric("Índice de Sucata %", f"{pct_sucata:.2f}%", delta=f"{pct_sucata:.2f}%", delta_color="inverse")
+                
+                st.markdown("---")
+                st.write("### 🏆 Top Materiais Produzidos (por Peso)")
+                
+                # Gráfico de Barras por Descrição
+                df_chart = df_banco.groupby("descricao")[["peso_real"]].sum().sort_values("peso_real", ascending=False).head(10)
+                st.bar_chart(df_chart)
+
         else: st.info("Nenhum dado.")
     elif senha_digitada: st.sidebar.error("Senha Incorreta")
 
@@ -373,7 +417,6 @@ elif modo_acesso == "Super Admin":
     if senha_digitada == SENHA_MESTRA:
         st.sidebar.success("Acesso ROOT Liberado")
         
-        # 1. ZERAR TUDO (Lotes e IDs voltam a 1)
         st.subheader("1. Reset Geral (Perigo)")
         st.warning("⚠️ Isso apaga TUDO e reinicia os lotes para BRASA00001 (IDs voltam a 1).")
         if st.button("💣 ZERAR BANCO DE DADOS COMPLETO", type="primary"):
@@ -384,15 +427,12 @@ elif modo_acesso == "Super Admin":
                 c.execute("DROP TABLE IF EXISTS sequencia_lotes")
                 conn.commit()
                 conn.close()
-                st.success("Banco deletado. Recarregue a página para ele recriar do zero (IDs resetados).")
+                st.success("Banco deletado. Recarregue a página.")
             except Exception as e: st.error(f"Erro: {e}")
 
         st.markdown("---")
         
-        # 2. AJUSTAR CONTADOR DE LOTE (AQUI VOCÊ CORRIGE A NUMERAÇÃO)
-        st.subheader("2. Ajustar Contador de Lotes (Correção Manual)")
-        st.info("Use isso se você apagou um lote (ex: 4) e quer que o próximo seja o 4 de novo (defina como 3).")
-        
+        st.subheader("2. Ajustar Contador de Lotes")
         conn = sqlite3.connect('dados_fabrica_v5.db')
         df_seq = pd.read_sql_query("SELECT * FROM sequencia_lotes", conn)
         st.dataframe(df_seq)
@@ -401,24 +441,22 @@ elif modo_acesso == "Super Admin":
         cod_sap_alvo = c1.number_input("Cód. SAP:", step=1, format="%d")
         novo_valor = c2.number_input("Definir 'Último Número' para:", min_value=0, step=1)
         
-        if c3.button("Salvar Correção de Lote"):
+        if c3.button("Salvar Correção"):
             try:
                 c = conn.cursor()
                 c.execute("UPDATE sequencia_lotes SET ultimo_numero = ? WHERE cod_sap = ?", (novo_valor, cod_sap_alvo))
                 conn.commit()
-                st.success(f"Contador do SAP {cod_sap_alvo} atualizado para {novo_valor}. Próximo será {novo_valor + 1}.")
+                st.success("Contador atualizado.")
                 st.rerun()
             except Exception as e: st.error(f"Erro: {e}")
         conn.close()
 
         st.markdown("---")
 
-        # 3. MANUTENÇÃO SIMPLES
         st.subheader("3. Excluir Registros Específicos")
         conn = sqlite3.connect('dados_fabrica_v5.db')
         df_prod = pd.read_sql_query("SELECT * FROM producao", conn)
         conn.close()
-        
         st.dataframe(df_prod, use_container_width=True)
         
         col_del_1, col_del_2 = st.columns([1, 2])
