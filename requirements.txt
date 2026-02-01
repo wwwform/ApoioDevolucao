@@ -3,3 +3,5 @@ pandas
 google-generativeai
 openpyxl
 Pillow
+gspread
+oauth2client
