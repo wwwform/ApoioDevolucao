@@ -216,7 +216,7 @@ elif perfil == "Administrador":
         if st.button("🔄 Atualizar"): st.rerun()
         
         db = get_db()
-        docs = db.collection('perfis_producao').order_by('timestamp', direction=firestore.Query.DESCENDING).stream()
+        docs = db.collection('perfis_producao').order_by('timestamp', direction=firestore.Query.DESCENDING).limit(1000).stream()
         lista = [d.to_dict() | {'id_doc': d.id} for d in docs]
         df = pd.DataFrame(lista)
         
