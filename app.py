@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from google.cloud import firestore
 from google.oauth2 import service_account
-from datetime import datetime
+from datetime import datetime, time as datetime_time
 import json
 import io
 import os
@@ -111,18 +111,18 @@ def carregar_base_sap():
     except: return None
 
 # --- APP ---
-st.sidebar.title("🔐 Acesso Firebase")
-perfil = st.sidebar.radio("Perfil:", ["Operador", "Administrador", "Super Admin"])
+st.sidebar.title("Acesso ao Sistema")
+perfil = st.sidebar.radio("Perfil de Acesso:", ["Operador", "Administrador", "Super Admin"])
 df_sap = carregar_base_sap()
 
 # === OPERADOR ===
 if perfil == "Operador":
-    st.title("🏭 Operador: Perfis")
+    st.title("Operador: Perfis")
     if df_sap is not None:
         if 'wizard_data' not in st.session_state: st.session_state.wizard_data = {}
         if 'wizard_step' not in st.session_state: st.session_state.wizard_step = 0
         
-        @st.dialog("📦 Entrada")
+        @st.dialog("Entrada de Dados")
         def wizard():
             st.write(f"**Item:** {st.session_state.wizard_data.get('Cód. SAP')}")
             fator_oculto = float(st.session_state.wizard_data.get('PESO_FATOR', 0.0))
@@ -136,11 +136,11 @@ if perfil == "Operador":
                             st.session_state.wizard_data.update({'reserva': res, 'PESO_FATOR': fator_oculto})
                             st.session_state.wizard_step = 2
                             st.rerun()
-                        else: st.error("Obrigatório")
+                        else: st.error("Campo obrigatório.")
             
             elif st.session_state.wizard_step == 2:
                 with st.form("f2"):
-                    qtd = st.number_input("2. Qtd:", min_value=1, step=1)
+                    qtd = st.number_input("2. Quantidade:", min_value=1, step=1)
                     if st.form_submit_button("PRÓXIMO"):
                         st.session_state.wizard_data['qtd'] = qtd
                         st.session_state.wizard_step = 3
@@ -155,17 +155,17 @@ if perfil == "Operador":
                         st.rerun()
             
             elif st.session_state.wizard_step == 4:
-                comp = st.number_input("4. Comp. Real (mm):", min_value=0)
+                comp = st.number_input("4. Comprimento Real (mm):", min_value=0)
                 fator = st.session_state.wizard_data['PESO_FATOR']
                 q = st.session_state.wizard_data['qtd']
                 tc = regra_corte(comp)
                 pt = (tc/1000.0) * fator * q
                 
-                if comp > 0: st.info(f"Calc: **{formatar_br(pt)} kg**")
+                if comp > 0: st.info(f"Cálculo: **{formatar_br(pt)} kg**")
                 
-                if st.button("✅ SALVAR"):
+                if st.button("SALVAR DADOS", type="primary"):
                     if comp > 0:
-                        with st.spinner("Salvando..."):
+                        with st.spinner("Registrando no sistema..."):
                             sucata = st.session_state.wizard_data['peso_real'] - pt
                             dados = {
                                 'reserva': st.session_state.wizard_data['reserva'],
@@ -180,14 +180,14 @@ if perfil == "Operador":
                             }
                             try:
                                 lote = salvar_no_firebase(dados)
-                                st.toast(f"Lote {lote} Salvo!")
+                                st.toast(f"Lote {lote} registrado.")
                                 st.session_state.wizard_step = 0
                                 st.session_state.input_scanner = ""
                                 time.sleep(1)
                                 st.rerun()
                             except Exception as e:
-                                st.error(f"Erro: {e}")
-                    else: st.error("Inválido")
+                                st.error(f"Erro de conexão: {e}")
+                    else: st.error("Valor inválido.")
 
         def check():
             c = st.session_state.input_scanner
@@ -202,18 +202,18 @@ if perfil == "Operador":
                             "PESO_FATOR": float(row.iloc[0]['PESO_FATOR'])
                         }
                         st.session_state.wizard_step = 1
-                    else: st.toast("Não encontrado")
+                    else: st.toast("Código não encontrado.")
                 except: pass
                 st.session_state.input_scanner = ""
 
         if st.session_state.wizard_step > 0: wizard()
-        st.text_input("BIPAR:", key="input_scanner", on_change=check)
+        st.text_input("Leitura SAP (Código):", key="input_scanner", on_change=check)
 
 # === ADMIN ===
 elif perfil == "Administrador":
-    st.title("💻 Admin")
+    st.title("Painel Administrativo")
     if st.sidebar.text_input("Senha", type="password") == "Br@met4l":
-        if st.button("🔄 Atualizar"): st.rerun()
+        if st.button("Atualizar Página"): st.rerun()
         
         db = get_db()
         docs = db.collection('perfis_producao').order_by('timestamp', direction=firestore.Query.DESCENDING).limit(1000).stream()
@@ -221,130 +221,161 @@ elif perfil == "Administrador":
         df = pd.DataFrame(lista)
         
         if not df.empty:
-            tab1, tab2 = st.tabs(["📋 Tabela de Dados", "📊 Relatórios e KPIs"])
+            df_pendentes = df[df['status_reserva'] == 'Pendente'].copy()
+            
+            tab1, tab2 = st.tabs(["Fila de Lançamentos", "Relatórios e Exportação"])
             
             with tab1:
-                st.subheader("Gerenciar Produção")
-                df_show = st.data_editor(df, key="ed", use_container_width=True, column_config={
-                    "id_doc": st.column_config.TextColumn(disabled=True, label="ID Sistema"),
-                    "timestamp": None,
-                    "status_reserva": st.column_config.SelectboxColumn("Status", options=["Pendente", "Ok - Lançada"], required=True)
-                })
+                st.subheader("Lotes Pendentes de Lançamento no SAP")
                 
-                if st.button("Salvar Status", type="primary"):
-                    for i, row in df_show.iterrows():
-                        orig = df[df['id_doc'] == row['id_doc']].iloc[0]['status_reserva']
-                        if row['status_reserva'] != orig:
-                            db.collection('perfis_producao').document(row['id_doc']).update({'status_reserva': row['status_reserva']})
-                    st.success("Salvo!")
-                    time.sleep(1)
-                    st.rerun()
-                
+                if not df_pendentes.empty:
+                    df_view = df_pendentes[['lote', 'reserva', 'cod_sap', 'descricao', 'qtd', 'peso_teorico', 'data_hora']]
+                    df_view.columns = ['Lote', 'Reserva', 'Cód. SAP', 'Descrição', 'Qtd', 'Peso (kg)', 'Data/Hora']
+                    st.dataframe(df_view, use_container_width=True, hide_index=True)
+                    
+                    if st.button("Arquivar Todos os Lotes Pendentes", type="primary"):
+                        with st.spinner("Processando..."):
+                            for _, row in df_pendentes.iterrows():
+                                db.collection('perfis_producao').document(row['id_doc']).update({'status_reserva': 'Ok - Lançada'})
+                        st.success("Lotes arquivados com sucesso.")
+                        time.sleep(1)
+                        st.rerun()
+                else:
+                    st.info("Não há lotes pendentes no momento.")
+                    
                 st.markdown("---")
-                with st.expander("🗑️ Excluir Registro (Admin)"):
-                    id_del_admin = st.text_input("Cole o 'ID Sistema' aqui para excluir:")
-                    if st.button("Excluir Item"):
+                with st.expander("Excluir Registro Específico"):
+                    id_del_admin = st.text_input("Insira o ID do Sistema para exclusão:")
+                    if st.button("Confirmar Exclusão"):
                         if id_del_admin:
                             try:
                                 db.collection('perfis_producao').document(id_del_admin).delete()
-                                st.success("Item excluído!")
+                                st.success("Registro excluído.")
                                 time.sleep(1)
                                 st.rerun()
-                            except: st.error("Erro ao excluir.")
-
-                st.markdown("---")
-                lst_export = []
-                for _, r in df_show.iterrows():
-                    lst_export.append({
-                        'Lote': r['lote'],
-                        'Reserva': r['reserva'],
-                        'SAP': r['cod_sap'],
-                        'Descrição': r['descricao'],
-                        'Status': r['status_reserva'],
-                        'Qtd': int(r['qtd']),
-                        'Peso Lançamento (kg)': float(r['peso_teorico']),
-                        'Comp. Real': int(r['tamanho_real_mm']),
-                        'Comp. Corte': int(r['tamanho_corte_mm'])
-                    })
-                    if float(r['sucata']) > 0.001:
-                        lst_export.append({
-                            'Lote': 'VIRTUAL',
-                            'Reserva': r['reserva'],
-                            'SAP': r['cod_sap'],
-                            'Descrição': f"SUCATA - {r['descricao']}",
-                            'Status': r['status_reserva'],
-                            'Qtd': 1,
-                            'Peso Lançamento (kg)': float(r['sucata']),
-                            'Comp. Real': 0,
-                            'Comp. Corte': 0
-                        })
-                
-                df_export = pd.DataFrame(lst_export)
-                b = io.BytesIO()
-                with pd.ExcelWriter(b, engine='openpyxl') as w:
-                    df_export.to_excel(w, index=False, sheet_name='Relatorio')
-                    ws = w.sheets['Relatorio']
-                    col_indices = [i+1 for i, c in enumerate(df_export.columns) if 'peso' in c.lower() or 'sucata' in c.lower()]
-                    for r in range(2, ws.max_row + 1):
-                        for c in col_indices:
-                            ws.cell(row=r, column=c).number_format = '#,##0.000'
-                
-                st.download_button("📥 Baixar Excel", b.getvalue(), "Relatorio.xlsx", "primary")
+                            except: st.error("Erro na operação.")
 
             with tab2:
-                st.subheader("Indicadores")
+                st.subheader("Indicadores de Produção (Últimos 1000 registros)")
                 c1,c2,c3 = st.columns(3)
-                c1.metric("Itens", len(df))
-                c2.metric("Total (kg)", formatar_br(df['peso_real'].sum()))
-                c3.metric("Sucata (kg)", formatar_br(df['sucata'].sum()))
-                st.bar_chart(df.groupby("descricao")["peso_real"].sum().sort_values(ascending=False).head(10))
+                c1.metric("Volume de Itens", len(df))
+                c2.metric("Peso Total (kg)", formatar_br(df['peso_real'].sum()))
+                c3.metric("Sucata Total (kg)", formatar_br(df['sucata'].sum()))
+                
+                st.markdown("---")
+                st.subheader("Exportação de Dados (Excel)")
+                st.info("Selecione o período para gerar o relatório completo consolidado.")
+                
+                col_d1, col_d2 = st.columns(2)
+                data_inicio = col_d1.date_input("Data Inicial", datetime.today())
+                data_fim = col_d2.date_input("Data Final", datetime.today())
+                
+                if st.button("Gerar Relatório Excel"):
+                    with st.spinner("Extraindo dados..."):
+                        inicio_dt = datetime.combine(data_inicio, datetime_time.min)
+                        fim_dt = datetime.combine(data_fim, datetime_time.max)
+                        
+                        docs_export = db.collection('perfis_producao')\
+                                        .where('timestamp', '>=', inicio_dt)\
+                                        .where('timestamp', '<=', fim_dt)\
+                                        .order_by('timestamp', direction=firestore.Query.DESCENDING)\
+                                        .stream()
+                        
+                        lista_export = [d.to_dict() for d in docs_export]
+                        
+                        if not lista_export:
+                            st.warning("Nenhum registro encontrado no período selecionado.")
+                        else:
+                            df_export = pd.DataFrame(lista_export)
+                            lst_final_excel = []
+                            
+                            for _, r in df_export.iterrows():
+                                lst_final_excel.append({
+                                    'Lote': r.get('lote', ''),
+                                    'Reserva': r.get('reserva', ''),
+                                    'SAP': r.get('cod_sap', ''),
+                                    'Descrição': r.get('descricao', ''),
+                                    'Status': r.get('status_reserva', ''),
+                                    'Qtd': int(r.get('qtd', 0)),
+                                    'Peso Lançamento (kg)': float(r.get('peso_teorico', 0)),
+                                    'Comp. Real': int(r.get('tamanho_real_mm', 0)),
+                                    'Comp. Corte': int(r.get('tamanho_corte_mm', 0)),
+                                    'Data/Hora': r.get('data_hora', '')
+                                })
+                                if float(r.get('sucata', 0)) > 0.001:
+                                    lst_final_excel.append({
+                                        'Lote': 'VIRTUAL',
+                                        'Reserva': r.get('reserva', ''),
+                                        'SAP': r.get('cod_sap', ''),
+                                        'Descrição': f"SUCATA - {r.get('descricao', '')}",
+                                        'Status': r.get('status_reserva', ''),
+                                        'Qtd': 1,
+                                        'Peso Lançamento (kg)': float(r.get('sucata', 0)),
+                                        'Comp. Real': 0,
+                                        'Comp. Corte': 0,
+                                        'Data/Hora': r.get('data_hora', '')
+                                    })
+                            
+                            df_final = pd.DataFrame(lst_final_excel)
+                            b = io.BytesIO()
+                            with pd.ExcelWriter(b, engine='openpyxl') as w:
+                                df_final.to_excel(w, index=False, sheet_name='Relatorio')
+                                ws = w.sheets['Relatorio']
+                                col_indices = [i+1 for i, c in enumerate(df_final.columns) if 'peso' in c.lower() or 'sucata' in c.lower()]
+                                for r in range(2, ws.max_row + 1):
+                                    for c in col_indices:
+                                        ws.cell(row=r, column=c).number_format = '#,##0.000'
+                            
+                            st.success("Relatório gerado.")
+                            nome_arquivo = f"Relatorio_Producao_{data_inicio.strftime('%d%m%Y')}.xlsx"
+                            st.download_button("Download Arquivo Excel", b.getvalue(), nome_arquivo, "primary")
 
-        else: st.info("Sem dados")
-    else: st.error("Senha incorreta")
+        else: st.info("Banco de dados vazio.")
+    else: st.error("Credenciais inválidas.")
 
 # === SUPER ADMIN ===
 elif perfil == "Super Admin":
-    st.title("🛠️ Super Admin (Controle Total)")
+    st.title("Super Administrador")
     if st.sidebar.text_input("Senha", type="password") == "Workaround&97146605":
         db = get_db()
         
-        tab_a, tab_b, tab_c = st.tabs(["🔥 Reset Geral", "🔢 Ajuste de Lotes", "🗑️ Exclusão Manual"])
+        tab_a, tab_b, tab_c = st.tabs(["Reset Geral", "Ajuste de Lotes", "Exclusão Manual"])
         
         with tab_a:
-            st.warning("CUIDADO: Isso apaga todos os dados de produção!")
-            if st.button("💣 APAGAR BANCO DE DADOS INTEIRO", type="primary"):
+            st.warning("ATENÇÃO: Operação destrutiva. Apaga todos os dados de produção.")
+            if st.button("APAGAR BANCO DE DADOS", type="primary"):
                 docs = db.collection('perfis_producao').stream()
                 for d in docs: d.reference.delete()
                 db.collection('controles').document('lotes_perfis').delete()
-                st.success("Banco limpo!")
+                st.success("Banco de dados limpo com sucesso.")
                 time.sleep(1)
                 st.rerun()
         
         with tab_b:
-            st.write("### Contadores de Lote")
+            st.subheader("Gerenciamento de Contadores de Lote")
             doc = db.collection('controles').document('lotes_perfis').get()
             if doc.exists:
                 data = doc.to_dict()
-                df_lotes = pd.DataFrame(list(data.items()), columns=['Cód. SAP', 'Último Lote Gerado'])
+                df_lotes = pd.DataFrame(list(data.items()), columns=['Código SAP', 'Último Lote Gerado'])
                 st.dataframe(df_lotes, use_container_width=True)
                 
                 c1, c2 = st.columns(2)
-                sap = c1.number_input("SAP para ajustar:", step=1, format="%d")
-                val = c2.number_input("Novo Valor (ex: 10):", step=1)
-                if c2.button("Atualizar Lote"):
+                sap = c1.number_input("SAP para alteração:", step=1, format="%d")
+                val = c2.number_input("Novo Valor Inicial:", step=1)
+                if c2.button("Atualizar Contador"):
                     db.collection('controles').document('lotes_perfis').set({str(sap): val}, merge=True)
-                    st.success("Atualizado!")
+                    st.success("Contador atualizado.")
                     time.sleep(1)
                     st.rerun()
-            else: st.info("Nenhum lote gerado ainda.")
+            else: st.info("Sem registros de lote no sistema.")
             
         with tab_c:
-            st.write("### Exclusão Cirúrgica")
-            st.info("Cole o ID do documento que deseja excluir permanentemente.")
+            st.subheader("Exclusão de Registros via ID")
+            st.info("Insira o ID exato do documento do Firestore para exclusão permanente.")
             id_manual = st.text_input("ID do Documento:")
-            if st.button("Excluir Documento"):
+            if st.button("Executar Exclusão"):
                 if id_manual:
                     try:
                         db.collection('perfis_producao').document(id_manual).delete()
-                        st.success("Deletado!")
-                    except: st.error("Erro ao deletar")
+                        st.success("Documento deletado com sucesso.")
+                    except: st.error("Falha na execução.")
