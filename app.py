@@ -233,13 +233,59 @@ elif perfil == "Administrador":
                     df_view.columns = ['Lote', 'Reserva', 'Cód. SAP', 'Descrição', 'Qtd', 'Peso (kg)', 'Data/Hora']
                     st.dataframe(df_view, use_container_width=True, hide_index=True)
                     
-                    if st.button("Arquivar Todos os Lotes Pendentes", type="primary"):
-                        with st.spinner("Processando..."):
-                            for _, row in df_pendentes.iterrows():
-                                db.collection('perfis_producao').document(row['id_doc']).update({'status_reserva': 'Ok - Lançada'})
-                        st.success("Lotes arquivados com sucesso.")
-                        time.sleep(1)
-                        st.rerun()
+                    # Preparação do Excel apenas com os dados visíveis na tela
+                    lst_export_pendentes = []
+                    for _, r in df_pendentes.iterrows():
+                        lst_export_pendentes.append({
+                            'Lote': r['lote'],
+                            'Reserva': r['reserva'],
+                            'SAP': r['cod_sap'],
+                            'Descrição': r['descricao'],
+                            'Status': r['status_reserva'],
+                            'Qtd': int(r['qtd']),
+                            'Peso Lançamento (kg)': float(r['peso_teorico']),
+                            'Comp. Real': int(r['tamanho_real_mm']),
+                            'Comp. Corte': int(r['tamanho_corte_mm']),
+                            'Data/Hora': r['data_hora']
+                        })
+                        if float(r['sucata']) > 0.001:
+                            lst_export_pendentes.append({
+                                'Lote': 'VIRTUAL',
+                                'Reserva': r['reserva'],
+                                'SAP': r['cod_sap'],
+                                'Descrição': f"SUCATA - {r['descricao']}",
+                                'Status': r['status_reserva'],
+                                'Qtd': 1,
+                                'Peso Lançamento (kg)': float(r['sucata']),
+                                'Comp. Real': 0,
+                                'Comp. Corte': 0,
+                                'Data/Hora': r['data_hora']
+                            })
+                    
+                    df_export_pendentes = pd.DataFrame(lst_export_pendentes)
+                    b_pendentes = io.BytesIO()
+                    with pd.ExcelWriter(b_pendentes, engine='openpyxl') as w:
+                        df_export_pendentes.to_excel(w, index=False, sheet_name='Pendentes')
+                        ws = w.sheets['Pendentes']
+                        col_indices = [i+1 for i, c in enumerate(df_export_pendentes.columns) if 'peso' in c.lower() or 'sucata' in c.lower()]
+                        for r in range(2, ws.max_row + 1):
+                            for c in col_indices:
+                                ws.cell(row=r, column=c).number_format = '#,##0.000'
+                    
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    col_btn1, col_btn2 = st.columns(2)
+                    
+                    with col_btn1:
+                        st.download_button("Baixar Excel (Apenas Lotes da Tela)", b_pendentes.getvalue(), "Lotes_Pendentes.xlsx", "secondary", use_container_width=True)
+                    
+                    with col_btn2:
+                        if st.button("Arquivar Todos os Lotes Pendentes", type="primary", use_container_width=True):
+                            with st.spinner("Processando..."):
+                                for _, row in df_pendentes.iterrows():
+                                    db.collection('perfis_producao').document(row['id_doc']).update({'status_reserva': 'Ok - Lançada'})
+                            st.success("Lotes arquivados com sucesso.")
+                            time.sleep(1)
+                            st.rerun()
                 else:
                     st.info("Não há lotes pendentes no momento.")
                     
@@ -263,14 +309,14 @@ elif perfil == "Administrador":
                 c3.metric("Sucata Total (kg)", formatar_br(df['sucata'].sum()))
                 
                 st.markdown("---")
-                st.subheader("Exportação de Dados (Excel)")
-                st.info("Selecione o período para gerar o relatório completo consolidado.")
+                st.subheader("Exportação de Dados (Histórico Completo)")
+                st.info("Selecione o período para gerar o relatório consolidado de todos os lotes (pendentes e arquivados).")
                 
                 col_d1, col_d2 = st.columns(2)
                 data_inicio = col_d1.date_input("Data Inicial", datetime.today())
                 data_fim = col_d2.date_input("Data Final", datetime.today())
                 
-                if st.button("Gerar Relatório Excel"):
+                if st.button("Gerar Relatório Excel (Histórico)"):
                     with st.spinner("Extraindo dados..."):
                         inicio_dt = datetime.combine(data_inicio, datetime_time.min)
                         fim_dt = datetime.combine(data_fim, datetime_time.max)
@@ -326,7 +372,7 @@ elif perfil == "Administrador":
                                     for c in col_indices:
                                         ws.cell(row=r, column=c).number_format = '#,##0.000'
                             
-                            st.success("Relatório gerado.")
+                            st.success("Relatório histórico gerado.")
                             nome_arquivo = f"Relatorio_Producao_{data_inicio.strftime('%d%m%Y')}.xlsx"
                             st.download_button("Download Arquivo Excel", b.getvalue(), nome_arquivo, "primary")
 
