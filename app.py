@@ -1,26 +1,4 @@
-import streamlit as st
-import pandas as pd
-from google.cloud import firestore
-from google.oauth2 import service_account
-from datetime import datetime, time as datetime_time
-import json
-import io
-import os
-import time
 
-# --- CONFIGURAÇÃO ---
-st.set_page_config(page_title="Sistema Integrado Produção", layout="wide")
-
-# --- CSS ---
-st.markdown("""
-<style>
-    header[data-testid="stHeader"] {display: none;}
-    .stDeployButton {display:none;}
-    div[data-testid="stTextInput"] label, div[data-testid="stNumberInput"] label {
-        font-size: 1.5rem !important;
-        font-weight: bold;
-        color: #2563eb; 
-    }
     .stButton>button {
         height: 3.5rem;
         font-size: 1.2rem !important;
